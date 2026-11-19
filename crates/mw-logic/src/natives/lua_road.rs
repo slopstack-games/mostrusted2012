@@ -959,7 +959,7 @@ mod tests {
         assert!(call(&mut lua, "ShowFeedbackMessage", vec![s("x"), n(7.0), Value::Nil])[0].is_nil());
         {
             let mut st = host.state.borrow_mut();
-            st.feedback_queues.queues[HUD].clear();
+            st.feedback_queues.queues[HUD].clear(&mut 0);
             st.feedback_queues.serial = SERIAL_WRAP - 1;
         }
         assert_eq!(call(&mut lua, "ShowFeedbackMessage", vec![s("x"), n(1.0)])[0].as_number(), Some(0.0));

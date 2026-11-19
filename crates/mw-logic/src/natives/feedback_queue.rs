@@ -36,6 +36,13 @@
 //! - Then, when a running queue's head is exclusive (+0xe8, the last such queue wins), every other interruptible
 //!   queue is suspended (+0x25), once per change; with none, all resume.
 //!
+//! **The layer set** (`HudMode`, +0x8c; `layer_set.rs`): a head that starts with one keeps the UI manager's
+//! requested set (UIM+0x31c08) in its record (+0x36c) and requests its own (`FUN_007b9ee0`); a timed head requests
+//! it again every frame its timer counts, unless it pauses with the game and is held (`FUN_007bab20`); a record
+//! that is released (`FUN_007b1c60`, and its copies in the queue clears `FUN_007b2e00` / `FUN_007b31b0` /
+//! `FUN_007b2fd0` / `FUN_007b3410` / `FUN_007b35c0`) requests the kept set again when that is not 0. So a message
+//! that started while no set was requested leaves its own set requested.
+//!
 //! The runtime feeds the loaded groups' messages ([`FeedbackQueues::set_group`]) and, once a play's layout is
 //! loaded, its in / out lengths ([`FeedbackQueues::sequences`]); it calls [`FeedbackQueues::update`] once per frame
 //! and draws the queues' [`Play`]s with their head's texts.
@@ -47,8 +54,7 @@
 //! +0x334 (a record byte whose writer was not found) stays false; `FUN_007b95c0`'s exit sound plays only without a
 //! sequence (its test of the play's time was not traced). Not modelled: the manager's pause counter
 //! (`FUN_0046ee70`(3)), the display widgets the update steps after the queues (+0x10990 .. +0x12808: Gameplay, Hud,
-//! HudSmall, NonInteractive, MostWantedList, Milestones, HudInstant, Nitrous, Commentary, Scoring), the HUD mode
-//! write (+0x8c → UIM+0x31c08), the camera / mix / world-entity effects (`FUN_007b2c20`, `FUN_007b7e40`,
+//! HudSmall, NonInteractive, MostWantedList, Milestones, HudInstant, Nitrous, Commentary, Scoring), the camera / mix / world-entity effects (`FUN_007b2c20`, `FUN_007b7e40`,
 //! `FUN_007b9480`, `FUN_007b7f90`).
 
 use std::collections::HashMap;
@@ -191,6 +197,8 @@ pub struct Message {
     pub waiting_movie: bool,
     /// +0x334.
     pub held: bool,
+    /// +0x36c: the layer set that was requested when this message started with its own (`HudMode`), 0 = none.
+    pub saved_layer_set: u32,
     /// Host-filled: the record's three text buffers (+0, +0x108, +0x210; `FUN_007c3b70`: the language string of
     /// `def.texts[i]` with the parts' `{name}`s filled), once `texts_ready`.
     pub texts: [String; 3],
@@ -245,17 +253,26 @@ impl Queue {
         self.messages.iter().any(|m| m.serial == serial)
     }
 
-    /// `FUN_007b3410` / `FUN_007b35c0` / `FUN_007b2ba0`: every message dropped (the play stays until the next
-    /// update releases it).
-    pub fn clear(&mut self) {
-        self.messages.clear();
+    /// `FUN_007b3410` / `FUN_007b35c0` / `FUN_007b2ba0`: every message dropped, in order (the play stays until the
+    /// next update releases it). `layer_set` is UIM+0x31c08 (see [`release`]).
+    pub fn clear(&mut self, layer_set: &mut u32) {
+        for m in self.messages.drain(..) {
+            release(&m, layer_set);
+        }
     }
 
     /// `FUN_007b3380`: the head dropped.
-    pub fn drop_head(&mut self) {
+    pub fn drop_head(&mut self, layer_set: &mut u32) {
         if !self.messages.is_empty() {
-            self.messages.remove(0);
+            release(&self.messages.remove(0), layer_set);
         }
+    }
+}
+
+/// `FUN_007b1c60`'s layer-set part: a released record that kept a set (+0x36c ≠ 0) requests it again.
+fn release(m: &Message, layer_set: &mut u32) {
+    if m.saved_layer_set != 0 {
+        *layer_set = m.saved_layer_set;
     }
 }
 
@@ -365,6 +382,7 @@ impl FeedbackQueues {
             started: false,
             waiting_movie: false,
             held: false,
+            saved_layer_set: 0,
             texts: Default::default(),
             texts_ready: false,
         };
@@ -376,11 +394,11 @@ impl FeedbackQueues {
     }
 
     /// `FUN_007bb160`: one frame of every queue. `dt` is the frame's real time, `game_dt` the game's step (None
-    /// while the game is paused).
-    pub fn update(&mut self, dt: f32, game_dt: Option<f32>, requests: &mut Vec<Request>) {
+    /// while the game is paused), `layer_set` UIM+0x31c08.
+    pub fn update(&mut self, dt: f32, game_dt: Option<f32>, layer_set: &mut u32, requests: &mut Vec<Request>) {
         let mut exclusive = NO_QUEUE;
         for i in 0..self.queues.len() {
-            self.update_queue(i, dt, game_dt, requests);
+            self.update_queue(i, dt, game_dt, layer_set, requests);
             let q = &self.queues[i];
             if !q.suspended && q.messages.first().is_some_and(|m| m.def.exclusive) {
                 exclusive = i;
@@ -404,13 +422,20 @@ impl FeedbackQueues {
     }
 
     /// `FUN_007baec0`.
-    fn update_queue(&mut self, i: usize, dt: f32, game_dt: Option<f32>, requests: &mut Vec<Request>) {
+    fn update_queue(
+        &mut self,
+        i: usize,
+        dt: f32,
+        game_dt: Option<f32>,
+        layer_set: &mut u32,
+        requests: &mut Vec<Request>,
+    ) {
         if let Some(group) = self.queues[i].messages.first().map(|m| m.group)
             && !self.group_loaded(group)
         {
             let q = &mut self.queues[i];
             q.suspended = false;
-            q.clear();
+            q.clear(layer_set);
         }
         let q = &mut self.queues[i];
         if q.suspended {
@@ -424,7 +449,7 @@ impl FeedbackQueues {
             q.play = None;
             return;
         }
-        if !q.messages[0].started && !self.start(i, requests) {
+        if !q.messages[0].started && !self.start(i, layer_set, requests) {
             return;
         }
         let ready = |s: &HashMap<u32, SequenceLengths>, id| s.contains_key(&id);
@@ -442,6 +467,10 @@ impl FeedbackQueues {
             let step = if m.def.cutscene_clock { game_dt.unwrap_or(0.0) } else { dt };
             m.timer -= ticks(step);
             m.done = m.timer / 3 < 1;
+            // The head's layer set, requested again every counted frame.
+            if !(m.def.pause_with_game && m.held) && m.def.effects.hud_mode != 0 {
+                *layer_set = m.def.effects.hud_mode;
+            }
         }
         q.flag_7a = m.def.flag_e7;
         if m.done {
@@ -449,17 +478,23 @@ impl FeedbackQueues {
             if q.play.take().is_none() && m.def.effects.exit_sound != 0 {
                 requests.push(Request::FeedbackMessageSound { queue: q.name.into(), sound: m.def.effects.exit_sound });
             }
-            q.messages.remove(0);
+            release(&q.messages.remove(0), layer_set);
             return;
         }
         self.play_sequence(i, game_dt.is_some());
     }
 
     /// `FUN_007b9ee0`: the head starts. False when the start emptied the queue (its transition message went to it).
-    fn start(&mut self, i: usize, requests: &mut Vec<Request>) -> bool {
+    fn start(&mut self, i: usize, layer_set: &mut u32, requests: &mut Vec<Request>) -> bool {
         let q = &mut self.queues[i];
         let m = &mut q.messages[0];
         m.started = true;
+        // +0x36c: 0 without a set of its own, else the set requested until now.
+        m.saved_layer_set = 0;
+        if m.def.effects.hud_mode != 0 {
+            m.saved_layer_set = *layer_set;
+            *layer_set = m.def.effects.hud_mode;
+        }
         if m.def.effects.movie != 0 {
             m.waiting_movie = true;
         }
@@ -472,7 +507,7 @@ impl FeedbackQueues {
         }
         let transition = m.def.transition_message;
         if transition != 0 {
-            self.queues[TRANSITION].clear();
+            self.queues[TRANSITION].clear(layer_set);
             self.post(TRANSITION, None, transition, "", Vec::new());
             if i == TRANSITION {
                 return false;
@@ -544,16 +579,16 @@ impl FeedbackQueues {
     /// `FUN_007b2ba0` on the Hud and SecondaryQueue queues), `ClearAllFeedbackQueues` /
     /// `ClearAllNonBackgroundFeedbackQueues` (`FUN_007b3410` on the Hud queue; their sequence-manager half is not
     /// modelled), `PLAYFEEDBACK`'s exit (`FUN_007b3410` on its queue). False for any other request.
-    pub fn apply(&mut self, r: &Request) -> bool {
+    pub fn apply(&mut self, r: &Request, layer_set: &mut u32) -> bool {
         match r {
             Request::ClearHudMessageQueues => {
-                self.queues[HUD].clear();
-                self.queues[SECONDARY].clear();
+                self.queues[HUD].clear(layer_set);
+                self.queues[SECONDARY].clear(layer_set);
             }
-            Request::ClearFeedbackQueues { .. } => self.queues[HUD].clear(),
+            Request::ClearFeedbackQueues { .. } => self.queues[HUD].clear(layer_set),
             Request::ClearFeedbackQueue { queue } => {
                 if let Some(q) = self.find_queue(queue) {
-                    self.queues[q].clear();
+                    self.queues[q].clear(layer_set);
                 }
             }
             _ => return false,
@@ -638,20 +673,20 @@ mod tests {
         f.post(HUD, None, 10, "", vec![]);
         f.post(HUD, None, 20, "", vec![]);
         let mut reqs = Vec::new();
-        f.update(0.25, Some(0.25), &mut reqs);
+        f.update(0.25, Some(0.25), &mut 0, &mut reqs);
         let p = f.queues[HUD].play.clone().unwrap();
         assert_eq!((p.sequence, p.layer, p.state, p.visible), (11, 11, 1, true));
-        f.update(0.25, Some(0.25), &mut reqs);
+        f.update(0.25, Some(0.25), &mut 0, &mut reqs);
         // 0.5 s counted: done and removed; the play goes with it.
         assert_eq!(f.queues[HUD].messages.len(), 1);
         assert!(f.queues[HUD].play.is_none());
-        f.update(0.1, None, &mut reqs);
+        f.update(0.1, None, &mut 0, &mut reqs);
         assert_eq!(f.queues[HUD].play.as_ref().unwrap().sequence, 21);
         // Its group released: the queue empties, then its play goes.
         f.set_group(7, None);
-        f.update(0.1, None, &mut reqs);
+        f.update(0.1, None, &mut 0, &mut reqs);
         assert!(f.queues[HUD].messages.is_empty());
-        f.update(0.1, None, &mut reqs);
+        f.update(0.1, None, &mut 0, &mut reqs);
         assert!(f.queues[HUD].play.is_none());
     }
 
@@ -662,16 +697,16 @@ mod tests {
         let mut f = with_group(vec![d]);
         f.post(SONG, None, 10, "", vec![]);
         let mut reqs = Vec::new();
-        f.update(0.1, Some(0.1), &mut reqs);
+        f.update(0.1, Some(0.1), &mut 0, &mut reqs);
         assert!(!f.queues[SONG].messages[0].timed);
         f.sequences.insert(11, SequenceLengths { in_len: 1.0, out_len: 0.5 });
-        f.update(0.1, Some(0.1), &mut reqs);
+        f.update(0.1, Some(0.1), &mut 0, &mut reqs);
         let m = &f.queues[SONG].messages[0];
         assert!(m.timed && !m.waiting_sequence);
         assert_eq!(m.timer, 4_500_000);
         assert_eq!(f.queues[SONG].play.as_ref().unwrap().out, Some(1_500_000));
         // 1.5 s → 0.4 s left, below the out time: the play goes out.
-        f.update(1.1, Some(1.1), &mut reqs);
+        f.update(1.1, Some(1.1), &mut 0, &mut reqs);
         let p = f.queues[SONG].play.as_ref().unwrap();
         assert_eq!((p.state, p.active), (3, false));
     }
@@ -696,21 +731,64 @@ mod tests {
         f.post(HUD, None, 20, "", vec![]);
         f.post(SONG, None, 10, "", vec![]);
         let mut reqs = Vec::new();
-        f.update(0.1, Some(0.1), &mut reqs);
+        f.update(0.1, Some(0.1), &mut 0, &mut reqs);
         assert!(f.queues[HUD].suspended && !f.queues[SONG].suspended);
-        f.update(0.1, Some(0.1), &mut reqs);
+        f.update(0.1, Some(0.1), &mut 0, &mut reqs);
         assert!(!f.queues[HUD].play.as_ref().unwrap().visible);
         let t = f.queues[HUD].messages[0].timer;
-        f.update(1.0, Some(1.0), &mut reqs);
+        f.update(1.0, Some(1.0), &mut 0, &mut reqs);
         // The exclusive one is done: the others resume; the suspended timer did not count.
         assert!(!f.queues[HUD].suspended);
         assert_eq!(f.queues[HUD].messages[0].timer, t);
-        assert!(f.apply(&Request::ClearHudMessageQueues));
+        assert!(f.apply(&Request::ClearHudMessageQueues, &mut 0));
         assert!(f.queues[HUD].messages.is_empty());
         assert_eq!(f.post_named("System", 20), 3);
         assert!(f.queues[f.find_queue("System").unwrap()].queued(3));
-        assert!(f.apply(&Request::ClearFeedbackQueue { queue: "System".into() }));
+        assert!(f.apply(&Request::ClearFeedbackQueue { queue: "System".into() }, &mut 0));
         assert!(f.queues.iter().all(|q| q.messages.is_empty()));
+    }
+
+    #[test]
+    fn layer_set_kept_requested_and_given_back() {
+        let mut own = def(10, 1.0);
+        own.effects.hud_mode = 7;
+        let mut f = with_group(vec![own, def(11, 1.0)]);
+        let mut reqs = Vec::new();
+        let mut set = 3;
+        // The head starts: the requested set goes into the record, its own is requested.
+        f.post(HUD, None, 10, "", vec![]);
+        f.update(0.25, Some(0.25), &mut set, &mut reqs);
+        assert_eq!((set, f.queues[HUD].messages[0].saved_layer_set), (7, 3));
+        // Another writer loses against the head while its timer counts.
+        set = 9;
+        f.update(0.25, Some(0.25), &mut set, &mut reqs);
+        assert_eq!(set, 7);
+        // Done: released, the kept set is back.
+        f.update(1.0, Some(1.0), &mut set, &mut reqs);
+        assert!(f.queues[HUD].messages.is_empty());
+        assert_eq!(set, 3);
+        // A message without a set changes nothing; one that started with none requested leaves its own.
+        f.post(HUD, None, 11, "", vec![]);
+        f.update(0.25, Some(0.25), &mut set, &mut reqs);
+        assert_eq!((set, f.queues[HUD].messages[0].saved_layer_set), (3, 0));
+        f.queues[HUD].clear(&mut set);
+        set = 0;
+        f.post(HUD, None, 10, "", vec![]);
+        f.update(0.25, Some(0.25), &mut set, &mut reqs);
+        assert_eq!(set, 7);
+        assert!(f.apply(&Request::ClearHudMessageQueues, &mut set));
+        assert_eq!(set, 7);
+        // A queue clear gives the kept set back too; an unstarted record has none.
+        set = 4;
+        f.post(HUD, None, 10, "", vec![]);
+        f.post(HUD, None, 10, "", vec![]);
+        f.update(0.25, Some(0.25), &mut set, &mut reqs);
+        set = 5;
+        f.queues[HUD].drop_head(&mut set);
+        assert_eq!(set, 4);
+        set = 6;
+        f.queues[HUD].clear(&mut set);
+        assert_eq!(set, 6);
     }
 
     #[test]
@@ -721,12 +799,12 @@ mod tests {
         let mut f = with_group(vec![d, def(20, 1.0)]);
         f.post(HUD, None, 10, "", vec![]);
         let mut reqs = Vec::new();
-        f.update(0.5, None, &mut reqs);
+        f.update(0.5, None, &mut 0, &mut reqs);
         assert_eq!(f.queues[TRANSITION].messages[0].def.id, 20);
         // Paused game: the pause-with-game timer holds, its play pauses.
         assert_eq!(f.queues[HUD].messages[0].timer, 3_000_000);
         assert_eq!(f.queues[HUD].play.as_ref().unwrap().state, 2);
-        f.update(0.5, Some(0.5), &mut reqs);
+        f.update(0.5, Some(0.5), &mut 0, &mut reqs);
         assert_eq!(f.queues[HUD].messages[0].timer, 1_500_000);
         assert_eq!(f.queues[HUD].play.as_ref().unwrap().state, 1);
     }

@@ -121,6 +121,7 @@ impl LogicHost {
             super::drifts::apply(&mut st, r);
             super::smash_grab::apply(&mut st, r);
             super::pois::apply(&mut st, r);
+            super::layer_set::apply(&mut st, r);
         }
         let mut p = std::mem::take(&mut self.pages);
         pages::apply(&mut p, &self.state, &|lua| self.install_lua(lua), r);
@@ -236,6 +237,8 @@ impl hsm::Host for LogicHost {
             Q::SmashGrabReady => super::smash_grab::entered(&st) as u64,
             Q::SmashGrabEnd => super::smash_grab::end_code(&st),
             Q::SmashGrabCleared => super::smash_grab::cleared(&st) as u64,
+            // `SET_LAY_SET` (`natives::layer_set`): UIM+0x31c08.
+            Q::LayerSet => u64::from(st.layer_sets.set),
             // `WAYPOINTS` (`natives::pois`): the POIs its enter added (+0x88).
             Q::WaypointPoiCount => st.pois.waypoints.len() as u64,
             // `EVENTSTARTS` (`natives::event_starts`): the update returned 1 this frame.

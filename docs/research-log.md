@@ -166,6 +166,60 @@ escaped, bust run busted with the meter filled in 4.0 s; without cop contact in 
 ahead in its lane (the ram above); a car put back by the fall rescue keeps its driver's old route progress; the
 15 m "taken" rule of `spawn_point` is ours. No engine-free regression test: `mw_police`'s `hold_spawns` works, the
 runtime set it a frame late (system order).
+## 2026-11-19: the UI manager's layer sets (`natives/layer_set.rs`): ported, and idle on PC
+
+Reversed from the dump (decomp.md "UI layer sets"): the requested set UIM+0x31c08, the group loader
+`FUN_007a48d0` (states at +0x31b74), the running state `FUN_007a2400` (leave `FUN_00796680` / `FUN_00791e60`, enter
+`FUN_007a08d0`, unload `FUN_0079de00`), the list and set layouts, every writer of the request.
+
+**Finding: the retail PC game never loads a layer-set list**, so the requested set shows and hides nothing:
+- the list comes from a UI group, whose id is the legacy screen loader's JSON key 0x3905d433 (`FUN_007dc4c0`) or a
+  `UI\GROUPS\<id>.BNDL` bundle (`FUN_0079dbf0`). The install has no `UI/GROUPS`; the 399 JSON key names of
+  `UI/SCREENS2`, `EN_US/FEEDBACKGROUPS`, `UICONFIG` and `GAMELOGIC` (extracted and hashed with the field hash)
+  hold none of the loader's keys (0x3905d433, 0x3b034b51, 0xaa227515, 0xde7a8e7c); `mwtool genesys-types` has no
+  type with the list's (+0xc id, +0x14 / +0x18 array) or the set's (+0x34 id, +0x40 / +0x46 layers, +0x49) layout;
+- `live.py -s snap1` / `snap2` at `1177868,2f480,0,31bf0`: list handle 0 / 0, entered 0 / 0, group 0, set 0, timer
+  0; +0x31b70 (layer table count) 0, +0x31b74 (loader state) 0; masks +0xc = 0x1f (5 layers allocated by other
+  means), +0x2c = 0;
+- data census: `SET_LAY_SET` in 5 states, all online log-in error flows (`mwtool hsm --find "Layout Set"`); the
+  field `056664c3` (+0x8c, "HudMode") is 0 in all 49 `FeedbackMessage` objects (`mwtool genesys` over
+  `EN_US/FEEDBACKGROUPS`).
+
+Ported all the same (engine-free, `mw-logic`): `LogicState::layer_sets` (`LayerSets`: the request, group, list,
+entered set, out timer, hold counter; `update` = `FUN_007a2400` + `FUN_0079de00` returning the layer calls as
+`LayerOp`s), `Request::SetLayerSet` applied by the logic host and `Query::LayerSet` answered from it (was: default
+0, never carried out), and the feedback record's part: kept at the head's start (+0x36c, `FUN_007b9ee0`), written
+again every counted frame (`FUN_007bab20`), given back at every release (`FUN_007b1c60` and the clears;
+`Queue::clear` / `drop_head` / the done head now take the request). The runtime (`feedback.rs`) passes the request
+to the queues and steps `LayerSets::update` after them; with no list it does nothing, and what `ui_widgets.rs`
+draws is unchanged, as in the original. No list parser: there is no such resource in the install to verify one
+against (the layouts are in decomp.md).
+
+**The song popup over the Easy Drive prompt is not a layer-set matter.** What separates them in the original is
+the adapters of the free-drive HUD's `EngineOffHud` widget (`EZPromptIn` / `EZMenuIn` = … AND
+`UIMessages.Songs.CurrentMessage.Text(IS_EMPTY)`, `HideForMusic`, `ChyronVisible`; decomp.md "UI layer sets", last
+paragraph), which drive that widget's layout timelines. `UIMessages.Songs.CurrentMessage.Text` resolves in the
+port (`feedback_queue::lookup`); the widget adapters do not (`pages.rs` publishes a widget's typed fields and
+`IsActive` only), so `Widget.EngineOffHud.EZPromptIn` reads null and the timeline shows its settled state.
+
+Model decisions: a layer's out time is asked from the host each frame; the enter's context entries / depth base are
+the host's (see the module doc). Tests: `cargo test -p mw-logic layer_set` (9: the update's rules on a made-up
+list, the logic host's request / query, the feedback record's keep / re-request / give back).
+
+Checked on the install (headless): `MW_MUSIC=1 MW_FEEDBACK_SHOT=<png> tools/t --front-end --auto-start 1`: no
+`SetLayerSet` request and no layer-set change in the whole boot run (three song popups); the popup still draws over
+the EASYDRIVE / NEW prompt, as before. `tools/t --hsm-event 462174 --auto-start 1 --test race --mute`: 27 / 27
+gates, finished, position 1, no layer-set activity.
+
+Open:
+- Evaluate the widget adapters (`FUN_00a51aa0` / `FUN_00a510e0`: `BindingSplices` with `operation` AND / OR / ADD /
+  SUBTRACT / MIN / MAX / SUBTRACT_FLOAT; the splice object keeps the operator at +0x18, the operand binding at
+  +0x1c, an int operand at +0x20; the function that applies them was not found by a switch search in 00A50000.c,
+  probably vtable-only) and publish them as `Widget.<widget>.<Name>`: that is what takes the prompt out under the
+  song popup.
+- The original's other platforms' group data would be needed to check the list layouts; captures that would
+  confirm the PC finding further: UIM+0x31b74 and +0x31c04 read in the front end, in a race and in the online
+  log-in error dialog.
 
 ## 2026-11-18: the map manager's POI list and the intro's waypoint POIs (`natives/pois.rs`, `poi.rs`)
 
@@ -217,8 +271,8 @@ the first free-drive song and draws its layout at the top left (note icon, artis
 posts nothing through these queues (no `PLAYFEEDBACK` runs; 27 / 27 gates as before).
 
 Open:
-- The popup is drawn over the Easy Drive prompt at the same place: the message's HUD mode write (+0x8c →
-  UIM+0x31c08), which is what would hide the prompt, is not modelled; nor are the display widgets stepped after the
+- The popup is drawn over the Easy Drive prompt at the same place (2026-11-19: not the HUD mode write, which is
+  ported now and decides nothing on PC; the `EngineOffHud` adapters do, see that entry); the display widgets stepped after the
   queues (UIM+0x10990 .. +0x12808) and the camera / mix / world-entity effects of a message's start.
 - Artist and title share one line in our draw; not compared with a capture of the original yet.
 - Message sounds, movies, speech and camera takes of `FUN_007b9ee0` are logged only.

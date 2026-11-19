@@ -80,6 +80,9 @@ pub struct LogicState {
     pub pois: super::pois::Pois,
     /// The UI message manager's feedback queues (UIM+0x17e0, `feedback_queue.rs`).
     pub feedback_queues: super::feedback_queue::FeedbackQueues,
+    /// The UI manager's layer sets (UIM+0x31bf0 .. +0x31c1e, `layer_set.rs`): the requested set and, were a list
+    /// ever loaded, the entered one.
+    pub layer_sets: super::layer_set::LayerSets,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -740,7 +743,8 @@ pub enum Request {
     /// `FUN_006f4680` (`MODEENDCHECK` online): the mode-end message (the clock stamp `FUN_0046ee10`+8, posted with
     /// `FUN_00715f40` while the message flag 8 of `*0x010edb5c` is set).
     SendModeEndMessage,
-    /// `SET_LAY_SET`: (*(G+0x2f480))+0x31c08 = `set` (the UI manager's layer set).
+    /// `SET_LAY_SET`: (*(G+0x2f480))+0x31c08 = `set` (the UI manager's layer set); the logic applies it
+    /// (`layer_set::apply`).
     SetLayerSet { set: u32 },
     /// `HSMCARSWAPLO` enter (`FUN_00758ba0`): the car-swap logic initialises its 0x74d0-byte instance (jack spots,
     /// `FUN_00747aa0`) and registers the view model `JackSpots` ("HSMBehaviourCarSwapLogic").

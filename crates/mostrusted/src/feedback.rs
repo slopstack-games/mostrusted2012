@@ -173,9 +173,9 @@ fn step(
                 Part { name: "AlbumName".into(), value: PartValue::Text(String::new()) },
                 Part { name: "Artist".into(), value: PartValue::StringId(s.artist as i32) },
             ];
-            let mut st = state.borrow_mut();
+            let st = &mut *state.borrow_mut();
             let f = &mut st.feedback_queues;
-            f.queues[SONG].clear();
+            f.queues[SONG].clear(&mut st.layer_sets.set);
             let serial = f.post(SONG, None, s.message, "", parts);
             let queued = f.queues[SONG].queued(serial);
             info!("feedback: song popup {} (serial {serial}, queued {queued})", s.message);
@@ -183,7 +183,16 @@ fn step(
     }
     {
         let st = &mut *state.borrow_mut();
-        st.feedback_queues.update(dt, game_dt, &mut st.requests);
+        let before = st.layer_sets.set;
+        st.feedback_queues.update(dt, game_dt, &mut st.layer_sets.set, &mut st.requests);
+        if st.layer_sets.set != before {
+            info!("feedback: layer set {before} -> {} (a message's HudMode)", st.layer_sets.set);
+        }
+        // The UI manager's layer sets (`FUN_007a2400`; `mw_logic::natives::layer_set`): no list is ever loaded on
+        // PC, so this does nothing and no layer is shown or hidden by the requested set.
+        for op in st.layer_sets.update(dt, &|_| 0.0) {
+            info!("layer set: {op:?}");
+        }
         // The records' texts (`FUN_007c3b70` at the post), once the language is in.
         if lang.is_some() {
             for m in st.feedback_queues.queues.iter_mut().flat_map(|q| q.messages.iter_mut()) {
