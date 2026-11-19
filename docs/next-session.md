@@ -9,10 +9,17 @@ waited on a ground ray the paused sim could not answer, research log "races with
 (the strut joint port: the wheels' mass rides with the car). Lua natives 385 / 385, HSM behaviour types 192 / 199
 (+ drift / Smash-and-Grab scoring), hooks 187 / 187. Police: roadblocks and the bust camera wired.
 
-**Merged 2026-11-19**: PR #8 (bug hunt, checked on the install), sfx_player one-shot exit rule, the HUD
-feedback-message queue, the map manager's POI list / intro waypoints (both finished from agents' uncommitted work).
+**Merged 2026-11-20 (sequence items, PLAN M8.6)**: timeline controllers (`mw_assets::timeline`, all six; outros
+wait on their conducted sequences), picture items (`sequence_picture.rs`: PostFX states drawn, palettes / time of day /
+timeline as state), intro spawns (`cutscene_spawns.rs`), damage-sequence VFX (`damage_vfx.rs`). Details: research log
+2026-11-19. Checked on the merged tree: clippy 0, tests, verify, both races (same times), 462174 intro shot.
 
 **Open**:
+- **Sequences left**: weapons / world-prop items (AddBehaviour, BehaviourEnabled, Animation, WaveSelect,
+  ApplyVehicleKick, JumpNTimes on TRK_UNIT), VfxSpot, Gameplay (heat level: the HARBOR RUN intro's two Chasing cops
+  are removed 0.75 s after spawning without it), SpawnDynamicEntity / SpawnTraffic; HUD sequences' controllers;
+  picture items run on the top-level clock (not their conducted one); motion blur / DOF / DisableWorldRendering
+  renderer side; wrecked state (169 damage items). Captures listed in each research-log entry.
 - **Feedback queue**: the song popup draws over the Easy Drive prompt (message HUD mode +0x8c not modelled); sounds /
   movies / speech of a message logged only (research-log 2026-11-19).
 - **POIs**: gates, event starts, collectables, racers and cops still bypass the list; map-edge clamping

@@ -387,11 +387,11 @@ fn run(
         // The transition, only with a second keyframe.
         let transition = if s.next_keyframe.is_some() { r.transition.unwrap_or(0.0) } else { 0.0 };
         // Colour cubes (`FUN_008e4a90`), with the state enabled (its binding not evaluated: on).
-        for k in 0..2 {
-            if s.cubes[k].cube.is_some() {
-                cubes[k] = (s.cubes[k].cube.map(|c| c.0), s.cube_modifier.apply(amount));
-            } else if s.cubes[k].clear {
-                cubes[k].1 = 0.0;
+        for (out, c) in cubes.iter_mut().zip(&s.cubes) {
+            if let Some(cube) = c.cube {
+                *out = (Some(cube.0), s.cube_modifier.apply(amount));
+            } else if c.clear {
+                out.1 = 0.0;
             }
         }
         let mut blend = SlotBlend::default();
