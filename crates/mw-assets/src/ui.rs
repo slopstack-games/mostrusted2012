@@ -1082,6 +1082,7 @@ impl UiScene {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn text(
         &self,
         e: &Element,
