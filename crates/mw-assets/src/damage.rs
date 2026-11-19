@@ -188,6 +188,8 @@ pub struct VehicleDamage {
     pub bind: Vec<Similarity>,
     /// Animated body parts (active aero) posed on the same skeleton (`crate::car_anim`).
     pub animations: Option<crate::car_anim::CarAnimations>,
+    /// The damage sequences' effect items (`DamageSequences`, `crate::damage_vfx`).
+    pub vfx: Vec<crate::damage_vfx::DamageSequence>,
 }
 
 impl VehicleDamage {
@@ -222,7 +224,7 @@ impl VehicleDamage {
                 Ok(DamageClip { zone, bones_direction: [x / len, z / len], animation })
             })
             .collect::<Result<_>>()?;
-        Ok(Self { skeleton, clips, bodyparts, bind, animations: None })
+        Ok(Self { skeleton, clips, bodyparts, bind, animations: None, vfx: Vec::new() })
     }
 
     /// Pose every bone (model space) with `levels[i]` (0..1) of damage in clip `i`.
@@ -408,6 +410,7 @@ impl AssetStore {
         let skeleton = Skeleton::parse(&self.load(skeleton_id)?)?;
         let mut anims: Option<ResourceId> = None;
         let mut bodyparts = Vec::new();
+        let mut vfx = Vec::new();
         for e in bundle.entries_of_type(ResourceType::GenesysObject) {
             let Ok(obj) = self.decode_genesys(&bundle.load(e)?) else { continue };
             if obj.type_name != "Genesys.Gen.VehicleDamageBehaviour" {
@@ -425,12 +428,14 @@ impl AssetStore {
                     })
                     .collect();
             }
+            vfx = self.damage_sequences(&obj, &spec);
             break;
         }
         let Some(anims) = anims else { return Ok(None) };
         let list = AnimationList::parse(&self.load(anims)?)?;
         let mut damage = VehicleDamage::new(skeleton, list.clips, bodyparts)?;
         damage.animations = self.car_animations(bundle)?;
+        damage.vfx = vfx;
         Ok(Some(damage))
     }
 

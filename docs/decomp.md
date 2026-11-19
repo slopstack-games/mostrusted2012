@@ -1615,6 +1615,52 @@ closing speed (2.235 m/s = 5 mph) as before.
   `ColourOverride` (+0x60), `ImpactClosingVelocity` (+0x70: entity +0x1bdc), `MovementSinceLastFrame` (+0x74: a
   float from vtable +0x48), `VehicleParams` (+0x80..+0xac: the plane and two more vectors).
 
+## Damage sequences and their effects (2026-11-19, ported in `damage_vfx.rs`)
+
+- **The sequences** (`FUN_005b6ce0`, the race car's damage module): every `VehicleDamageBehaviour.DamageSequences`
+  entry (array +0x28, count +0x32; eight per car, handle +0xc) is started with three parameters, among them a
+  `RaceCarIndexSequenceItemParam` (`FUN_00861c20`) carrying the car's slot; the handles land at module +0xc4. They
+  run for the car's life. Their `Binding` (`RaceCarEntities.RaceCar[#].GetFrontDamageBar` …) is not what moves them.
+- **`RaceCarEntityTimelineController`** (type id 0x1565d8, factory 0x0058f230 registered by `FUN_00590ce0`; 0x20
+  bytes, vtable 0x00fae1cc): +0x14 (`0x00826510`) takes the car index from the index parameter (+0x1c); +4
+  (`0x00828dd0`, the controller's time step, called by `FUN_00a42140` and replacing the sequence clock) reads the
+  race-car entity (`world +0x18 + index × 0x1c40 + 0x3050`; only when its byte +0x19 is set, else the clock passes
+  through) by `Property` (+0x1c of the data, jump table 0x00828f10): 0 → `0x005121f0` (y × w of +0xbb0, × 100),
+  1..8 → `0x005a1b70`, `…bc0`, `…c10`, `…c60`, `…cb0`, `…d50`, `…d00`, `…da0` = the zone levels +0xbd0 (front),
+  +0xbe0 (rear), +0xbe8 (left), +0xbd8 (right), +0xbcc (front-left), +0xbd4 (front-right), +0xbe4 (rear-left),
+  +0xbdc (rear-right), each capped at 0.99 (0x00f9cad4) while +0xc20 < profile +0x74 (not wrecked), × 100
+  (0x00faba78). The eight damage sequences carry properties 1..8 in that order, the damage clips' zone order
+  ("Vehicle damage pose"): the axis is the zone's damage in percent.
+- **Item loop** (`FUN_00a42b90`, from `FUN_00a45220`): range test `StartTime ≤ t ≤ EndTime` (look-ahead vtable +4,
+  0 here); entering calls +8 then +0xc, leaving +0x28; `FUN_00a42f00` calls +0x14 on every active item with
+  (local time, axis delta, context, the player's weight +0x40 = 1.0 from its set-up `FUN_00a43b30`, called by the start `FUN_00a45070`).
+- **`VfxLocatorGroupVehicleSpotEffectSequenceItem`** (factory 0x0086a7b0, vtable 0x00ff30c4, 0xdc bytes; fields
+  `LocalOffset` +0x30, `LocalRotation` +0x40, `Intensity` +0x50, `97b735e6` +0x88, effect `50635a40` +0x90,
+  `LocatorGroup` +0x98): +8 `0x00862850` binds `Intensity`'s binding; +0xc `0x00862010` arms the four slots
+  (+0xb0, {handle, state}) with state 0 when the car's +0x1964 is 0 (|x| ≤ FLT_EPSILON) and +0x1c2a is set, else 2
+  (nothing plays until entered again). +0x1964 is 0.1 s (0x00fad540) from the spawn (`FUN_00591350`), 0 at creation
+  (`FUN_00586810`, which also sets +0x1c2a), counted down by `FUN_00587120`. +0x14 `0x00866390`: `Intensity` by
+  `FUN_00862590` (no keys / binding: `Value` × weight; otherwise the curve at local / length, three combine modes
+  by +0x30) into `FUN_00865f20`: plane = the car's up axis through its origin (unless `FUN_00572810`, then a world
+  record), car matrix, the car's +0x120 vector as velocity; per locator of `FUN_0057c4b0(LocatorGroup)` the matrix
+  car × locator, then `FUN_008644e0` (local rotation from degrees, × 0.0174533, and the offset in the locator's
+  frame) and `FUN_00864ec0`: state 0 → create the effect (`FUN_0049f7c0` with the car's parameter block, vtable
+  +0x4c, and a float from vtable +0x48 called with "LocatorGroupVehicleSpotEffectSequence") unless the slot's
+  handle is alive, write the intensity into the record's velocity w (+0x540 + 0xc, the effect's `Intensity`), state
+  1; state 1 and alive → refresh the record (`FUN_00597940`) and the intensity. +0x24 `0x00862890` (also the exit,
+  +0x28 = `0x005421a0` → +0x24): each live effect's record +0xe8 bit 1 cleared (emission off), slot state −1.
+  With the string `97b735e6` set (+0xd8) the transform comes from a binding instead (`FUN_00a48b50`); no item uses it.
+- **`VfxSpotEffectSequenceItem`** (factory 0x0086a6f0, vtable 0x00ff3054, 0xd0 bytes, effect `873d9e9c`): one slot
+  (+0xc4 / state +0xc8, armed by +0xc `0x00861db0`); update `0x008662e0` → `FUN_00865310`: transform from the
+  binding (`FUN_00869010`), velocity from its movement over dt or a player car's (+0xcc, player +0x23d,
+  `FUN_006ba3b0`), created by `FUN_0049f750` (tag "Sequence"); its stop `0x00862950` returns 0 while the effect
+  lives, so the item plays out. Not played by the runtime yet (6 uses: weapons, feedback groups).
+- **Data** (93 `_HI` cars, 836 items; `_LO` the same): every item has zero offset / rotation, `Intensity` 1 without
+  keys or binding and an empty `97b735e6`; ranges 60..100 (337), 40..100 (232), 100..100 (169, need a wreck), 80..100
+  (91), 70..100 (4), 60..0 (3, never). Effects (all `GLOBALEFFECTS.BNDL` `BearEffect`s): `…117d61` (511, mostly at
+  100), `…9cbe7` (232, from 40 %: rear / sides; the 911's engine is in the rear), `…117da7` (62, front from 80 %),
+  `…a39bc` (28), `…f582b` (3).
+
 ## Bear particle runtime (2026-10-09)
 
 - Action kinds index a table at `.data` 0x010c2d48 (`FUN_0043f8a0`): `{name, compile, run, info}` per kind,
