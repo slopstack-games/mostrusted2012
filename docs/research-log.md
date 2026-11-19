@@ -11,6 +11,57 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: "UI wrong at 1920×1080, intro upside down" on the install: nothing depends on the resolution; tip strip scrolls, Easydrive obeys the logic
+
+Runs: `MW_HSM_SHOTS=<dir> tools/t --race 462174` at 1280×720 and at a real 1920×1080 window (`MW_HL_SIZE=1920x1080
+MW_WINDOW=1920x1080`: `MW_HL_SIZE` alone only sizes the gamescope display, the window and the shots stay 1280×720).
+The card, intro and race shots are the same picture at both sizes (HUD × 1.5), as the code reading of 2026-11-18
+said. No regression from a merge: every symptom is older or not a fault. Per symptom:
+- **Intro upside down**: the original (capture 2026-10-09, archive "race cinematic cameras settled by captures":
+  462174's intro is upside down from 3 s to the teleport). No change.
+- **HUD at the screen edges, speedometer "cut off" at the bottom right**: the original
+  (`ref/ui-2026-10-19/hud_1680x720.png`): the speed and odometer panels run off the right edge there too, the
+  minimap sits at the left edge. Cropped side by side the panels coincide. Two real differences inside the panel,
+  both the known "odometer spacing" item (not fixed, no rule traced): the lit speed digit sits ≈ 5 reference px
+  right of the original's (ours x 1200..1226, original 1195..1221; right-justified by the pen advance 22.4 where
+  the ink is 27.3 wide), and the odometer's digits (font 581007, no `.` glyph quad; the point is its own label
+  1146726 at x 1209) are packed: our `.` advances 2.5 px net of the −2.07 spacing, the original's digit pitch across
+  the point is ≈ 18 px (would fit spacing 0: 13.3 + 4.6). Also the odometer read 1.2 km 12 s into the race: the
+  teleports count as distance driven (`hud.rs`, not fixed). Capture to settle: the original's HUD at a two- or
+  three-digit speed (F12 at 1280×720), for the digit pitch.
+- **Large rotated "CHECK…" at the top right**: the target gate's world marker (`gate_marker.rs`), seen from a car
+  that left the road (nobody drives in the shots run; 0.05 m per layout px under 20 m). Not a screen-space
+  message and not the feedback queue. Its axes / rotation stay model decisions; to settle: F12 shots of the
+  original approaching a race gate at about 60 m and 15 m.
+- **Card tip line at the left edge**: a fault. The tip is a `UIElement_PrototypeScrollingText` (box x 0..1000,
+  `ScrollRate` 125) which we drew still at the box's left, in upper case. The original
+  (`ref/frontend-2026-10-10/o8..o10.png`, `ref/ui-2026-10-19/transition_1024x768.png`) shows the string as stored
+  (mixed case) entering at the box's right edge and moving left: left edge at x 850 / 625 / 330 in o8 / o9 / o10,
+  which at 125 px/s is 1.2 / 3.0 / 5.4 s, in step with the card's Most Wanted list (on 0.75–4.5 s: there in o8 and
+  o9, gone in o10). Ported: `Element::scroll_rate`, `UiAnim` scroll state (restarts when the element appears or
+  its text changes), `scroll_distance`; clipped to the element's box; `pick_tips` no longer upper-cases. Our card
+  3 s in now has the tip at x 635 (o9: 625). Model decisions: px/s as the unit (fits the captures), the text
+  enters again once it has left (not seen), no fade at the box's right end (the original's last ≈ 40 px fade).
+  The element's code was not found: its field hashes (`ScrollRate` 0x03c477b2, `ScrollingStrings` 0x4b950bc7)
+  appear neither in the dump's C nor in `text.asm` nor in the exe's data.
+- **New: the Easydrive menu over the intro and over the race HUD** (first 720p run only): the runtime's own menu
+  was open (most likely a d-pad right from the connected pad, gilrs reads it in headless runs too; opens are now
+  logged, `Easydrive: opened (EASY_RIGHT|E)`). Nothing closed it: it ignored the logic. Now (easydrive.rs
+  "Availability"): it closes and stays shut while `UISequences.HideHudRequests(GTEQ:1)` (states 1445505 →
+  `INTERRUPT` → "Wait Show EZ Drive" 1445536) and takes no input while the `EASYDRIVE` input group 6 is blocked
+  (`HSB_DISCONGP` `GROUP` = `CAR` = {1, 6}: 2050378 / 1560571 / 1445348). Checked: `--race 462174
+  --show-easydrive` logs "closed, a sequence hides the HUD" and the intro / race shots are clean.
+
+**Open**: (1) for the layer-set / Easydrive port: the logic does not know the runtime's Easydrive is open
+(`Widget.EasyDrive.IsActive` is the logic widget's, group 1135023), so "Exit When Easy Drive On" 1524979 / 2042068 /
+1773904 never leave and the race HUD's `AdditionalHUD` group 1524971 (POSITION / LAP) stays drawn under an open
+menu; the original hides it. (2) Car controls are not held by the input blocks either (group 1). (3) The intro
+HUD 1560359's `EasyDrive` widget is group 1773745, not in `ui_widgets::DRAWN_ELSEWHERE` (1135023): if that group
+is ever activated the widget renderer draws its menu layout too. (4) Headless runs read the real gamepad. (5) The
+digit pitch and gate marker captures above. Evidence (worktree `scratch/`): `race_720_1080.png`,
+`card_tip_before_after_orig.png`, `intro_before_after.png`, `race_easydrive_before_after.png`, `speedo_cmp.png`,
+`odo_zoom.png`.
+
 ## 2026-11-18: the map manager's POI list and the intro's waypoint POIs (`natives/pois.rs`, `poi.rs`)
 
 Ported from the code (decomp.md "Points of interest: the map manager's list"): UIM+0x14c50, 260 records of 0x60

@@ -21,6 +21,14 @@
 //! the input mappings `easy_up` (previous), `easy_down` (next), `easy_left` (back a tier), `easy_right` (select;
 //! `Hack_EasyRight` opens) and `cancel` (quick close); which keys those mappings are on PC is not decoded, so
 //! here: the original's EASY_* bindings (d-pad; Num 4 / 6 / 8 / 2, input.rs), Esc / pad B to close, `E` opens (ours).
+//!
+//! **Availability** (the logic's, while this menu is still the runtime's own; research log 2026-11-19): the
+//! Easydrive machines leave the open menu through `INTERRUPT` while `UISequences.HideHudRequests(GTEQ:1)` ("Run
+//! Child - Exit When EasyDrive Unavailable" 1445505) and their prompt then waits for the HUD ("Wait Show EZ Drive"
+//! 1445536) instead of for input: the menu closes and does not open while a sequence hides the HUD (an event's
+//! intro). The `EASYDRIVE` control group (input group 6, also listed by `CAR`; `GameLogicState`, 0x6b1770) blocked
+//! by an `HSB_DISCONGP` state ("Disable Car Controls and Easydrive" 2050378 / 1560571 / 1445348, `GROUP` = `CAR`:
+//! the boot, the event intro) keeps the menu's input away.
 
 use crate::platform::PollLock;
 use std::sync::{Arc, Mutex};
@@ -52,7 +60,7 @@ pub struct EasyDrivePlugin {
 impl Plugin for EasyDrivePlugin {
     fn build(&self, app: &mut App) {
         let script = self.path.iter().rev().copied().collect();
-        app.insert_resource(EasyDrive { enabled: self.enabled, open: self.open, script, ..default() })
+        app.insert_resource(EasyDrive { enabled: self.enabled, open: self.open, show: self.open, script, ..default() })
             .add_systems(Startup, start_load)
             .add_systems(Update, (poll_load, navigate, redraw).chain());
     }
@@ -89,6 +97,9 @@ pub struct EasyDrive {
     pub open: bool,
     /// Opened at least once (the HUD's `Widget.Prompt.New` model, `hud.rs`).
     pub seen: bool,
+    /// `--show-easydrive`: the menu the logic closed opens again once it may.
+    reopen: bool,
+    show: bool,
     tiers: Vec<Tier>,
     job: Option<Arc<Mutex<Option<Loaded>>>>,
     look: Option<Look>,
@@ -380,6 +391,9 @@ fn rows(
     }
 }
 
+/// The `EASYDRIVE` control group's input group (the input manager's table, `mw_logic::natives::game_logic_view`).
+const EASYDRIVE_INPUT_GROUP: usize = 6;
+
 #[allow(clippy::too_many_arguments)]
 fn navigate(
     mut menu: ResMut<EasyDrive>,
@@ -395,7 +409,30 @@ fn navigate(
     front: Option<Res<crate::frontend::FrontEnd>>,
     jack: Option<Res<crate::jackspots::JackSpots>>,
     screens: (Option<Res<crate::map_screen::MapScreen>>, Option<Res<crate::event_card::EventCard>>),
+    view: Option<NonSend<crate::ui_sequence::LogicView>>,
 ) {
+    // The logic's say (module doc "Availability"): the menu closes while a sequence hides the HUD, and the
+    // `EASYDRIVE` control group's block keeps its input away.
+    if let Some(view) = &view {
+        let st = view.0.borrow();
+        let hidden = st.resolve_bool("UISequences.HideHudRequests(GTEQ:1)") == Some(true);
+        let blocked = st.game.input_blocks.counts[EASYDRIVE_INPUT_GROUP] != 0;
+        drop(st);
+        if hidden && menu.open {
+            info!("Easydrive: closed, a sequence hides the HUD");
+            menu.stack.clear();
+            menu.open = false;
+            menu.just_closed = true;
+            menu.dirty = true;
+            menu.reopen = menu.show;
+        }
+        if hidden || blocked {
+            return;
+        }
+        if std::mem::take(&mut menu.reopen) && !menu.tiers.is_empty() {
+            open_root(&mut menu);
+        }
+    }
     // Not over the front end's screens ("Disable Car Control and Easydrive"), the map or the event card.
     let (map, card) = screens;
     if !menu.enabled
@@ -427,6 +464,7 @@ fn navigate(
     }
     if !menu.open {
         if (keys.just_pressed(KeyCode::KeyE) && !swap_key) || right {
+            info!("Easydrive: opened ({})", if right { "EASY_RIGHT" } else { "E" });
             open_root(&mut menu);
         }
         return;
