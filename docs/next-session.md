@@ -11,7 +11,6 @@ waited on a ground ray the paused sim could not answer, research log "races with
 
 **Merged 2026-11-19**: PR #8 (bug hunt, checked on the install), sfx_player one-shot exit rule, the HUD
 feedback-message queue, the map manager's POI list / intro waypoints (both finished from agents' uncommitted work).
-One worktree is left to remove: `agent-ae1caf9e7b2a6f6d8` (merged; the session ran inside it).
 
 **Open**:
 - **Feedback queue**: the song popup draws over the Easy Drive prompt (message HUD mode +0x8c not modelled); sounds /
@@ -24,12 +23,6 @@ One worktree is left to remove: `agent-ae1caf9e7b2a6f6d8` (merged; the session r
   edges are the original's, "CHECK" is the gate's world marker. Fixed: the card's tip scrolls (mixed case), Easydrive
   closes under HideHud and obeys the `EASYDRIVE` input block. Open: the logic does not know the runtime's Easydrive
   is open (POSITION / LAP under the menu), speed / odometer digit pitch, a gate-marker capture.
-- **Pursuit test** times out (2 of 2) after the speech merge (c02f83d); passed before it with `--units 12 --no-traffic`.
-- **User report: UI wrong almost everywhere** (races starting when played: fixed by PR #8, user to confirm). Shots at 1920×1080 (`MW_HL_SIZE=1920x1080
-  MW_HSM_SHOTS=<dir> tools/t --race 462174`): intro camera upside down (≈180° roll); race HUD hugs the edges, the
-  speedometer is cut off at the bottom right, a large rotated "CHECK…" message at the top right (new feedback queue?);
-  card tip line at the left edge. The HUD is drawn from the logic's widgets since `ui_widgets.rs` (merged 2026-11-18,
-  checked only at 1280×720). Compare 720p vs 1080p first, then bisect today's merges if needed.
 - **Pursuit test** passes again, with and without traffic (the time-out and the 8 s bust were the test's set-up, not
   speech or a rule: research-log 2026-11-19). Open: the racer AI rams a slow car 30 m ahead in its lane.
 - **Runtime inputs not fed**: drift / Smash-and-Grab scoring inputs (no event uses them); online requests (store,
