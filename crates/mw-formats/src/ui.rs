@@ -363,6 +363,12 @@ pub struct Element {
     /// (research log 2026-10-19 "UI frame"). Our reading from the data and a capture; the field's name is
     /// unknown.
     pub sizes_cell: bool,
+    /// `UIElement_PrototypeScrollingText`'s `ScrollRate` (125 in every instance; 0 for other elements): the
+    /// text's speed to the left, reference pixels per second (the unit is our reading: captures of the original's
+    /// event card, `ref/frontend-2026-10-10/o8..o10.png`, show the tip entering at its box's right edge and
+    /// moving left; at 125 px/s their positions fall at 1.2 / 3.0 / 5.4 s, in step with the card's Most Wanted
+    /// list, on at 0.75–4.5 s).
+    pub scroll_rate: f32,
     pub sub_image: Option<Box<Element>>,
     /// `UIElement_ElementStack`: a list of layouts repeated over a data source.
     pub stack: Option<Box<Stack>>,
@@ -453,6 +459,11 @@ impl Element {
             margins,
             min_size: [float(o, field::MIN_WIDTH), float(o, field::MIN_HEIGHT)],
             sizes_cell: boolean(o, 0xbb6c_ac74),
+            scroll_rate: if kind == ElementKind::ScrollingText {
+                float(o, crate::genesys::field_hash("ScrollRate"))
+            } else {
+                0.0
+            },
             // Backed labels' backing image, or the minimap's mask image.
             stack: (kind == ElementKind::ElementStack).then(|| Box::new(Stack::from_object(o))),
             sub_image: object(o, field::SUB_IMAGE)

@@ -536,13 +536,15 @@ pub(crate) fn pick_pictures(
 
 /// [`TIPS`] loading tips for the strip's `Transitions.Tip` (the offline categories, a random order; how the game's
 /// `GameTipsViewModel` picks them was not traced).
+/// The strings as the language table has them (mixed case, as the original shows them:
+/// `ref/ui-2026-10-19/transition_1024x768.png`, `ref/frontend-2026-10-10/o8..o10.png`).
 pub(crate) fn pick_tips(cfg: &fe::LoadingConfig, lang: &mw_formats::Language, seed: &mut u64) -> Vec<String> {
     let mut tips = cfg.tips.clone();
     let mut out = Vec::new();
     while !tips.is_empty() && out.len() < TIPS {
         let id = tips.swap_remove(next_random(seed) % tips.len());
         if let Some(s) = lang.get(id) {
-            out.push(s.to_uppercase());
+            out.push(s.to_string());
         }
     }
     out

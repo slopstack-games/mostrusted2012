@@ -19,11 +19,11 @@ One worktree is left to remove: `agent-ae1caf9e7b2a6f6d8` (merged; the session r
 - **POIs**: gates, event starts, collectables, racers and cops still bypass the list; map-edge clamping
   (`FUN_0080cb60`) not ported (research-log 2026-11-18 "POI list").
 - **Bug hunt**: suspected items left unchanged are listed in research-log 2026-11-18.
-- **User report: UI wrong almost everywhere** (races starting when played: fixed by PR #8, user to confirm). Shots at 1920×1080 (`MW_HL_SIZE=1920x1080
-  MW_HSM_SHOTS=<dir> tools/t --race 462174`): intro camera upside down (≈180° roll); race HUD hugs the edges, the
-  speedometer is cut off at the bottom right, a large rotated "CHECK…" message at the top right (new feedback queue?);
-  card tip line at the left edge. The HUD is drawn from the logic's widgets since `ui_widgets.rs` (merged 2026-11-18,
-  checked only at 1280×720). Compare 720p vs 1080p first, then bisect today's merges if needed.
+- **User report: UI wrong almost everywhere** (races starting when played: fixed by PR #8, user to confirm). Checked
+  on the install (research log 2026-11-19): nothing depends on the resolution; the intro roll and the HUD at the
+  edges are the original's, "CHECK" is the gate's world marker. Fixed: the card's tip scrolls (mixed case), Easydrive
+  closes under HideHud and obeys the `EASYDRIVE` input block. Open: the logic does not know the runtime's Easydrive
+  is open (POSITION / LAP under the menu), speed / odometer digit pitch, a gate-marker capture.
 - **Pursuit test** times out (2 of 2) after the speech merge (c02f83d); passed before it with `--units 12 --no-traffic`.
 - **Runtime inputs not fed**: drift / Smash-and-Grab scoring inputs (no event uses them); online requests (store,
   friends, telemetry, speedwall cache); car select, speech, waypoints logged-only until the agents above land.

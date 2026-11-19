@@ -1049,7 +1049,8 @@ are names packed base 40 into a u64 (`EXIT`, `ENTER`, `TRUE` / `FALSE`, `YES` / 
 - `Widget_MenuData` (a screen's menus): `CustomItems` [{`Action` token, `Name` (language id), `Description`,
   `Icon`, `Active`}], `Title`.
 - `UIElement_PrototypeScrollingText`: `ScrollingStrings` [{`Binding`, string id}], `DataSource` (used when both
-  are empty), `ScrollRate` (125).
+  are empty), `ScrollRate` (125: px/s to the left, the text entering at the box's right edge; research log
+  2026-11-19).
 - Movies: `UI/MOVIES/*.VP6` are EA `MVhd` containers with VP6 video at 30 fps, 1280×720 (some 512×256); ffmpeg
   decodes the title movies (1689283, 1689287) but fails on several of the 1.5 s clips ("Invalid data").
 

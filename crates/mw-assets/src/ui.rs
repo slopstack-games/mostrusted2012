@@ -1035,6 +1035,10 @@ impl UiScene {
             backing.opacity *= tween.opacity;
             self.element(&backing, place, Some([rect[0], rect[1]]), clip, lookup, options, out);
         }
+        // A scrolling text (`UIElement_PrototypeScrollingText`) shows inside its box only, and moves.
+        let scrolling = e.kind == ElementKind::ScrollingText && e.scroll_rate > 0.0;
+        let clip = if scrolling { Some(clip.map_or(screen_rect, |c| intersect(c, screen_rect))) } else { clip };
+        let scroll = if scrolling { options.scroll_since(e, &label_text(self, e, lookup)) } else { None };
         let mut push = |texture: Option<ResourceId>, uv: [f32; 4], r: [f32; 4], colour: [f32; 4], map: bool| {
             push_quad(out, Quad { texture, uv, rect: r, rotation, colour, blend, map }, screen_pivot, clip);
         };
@@ -1073,7 +1077,7 @@ impl UiScene {
                 push(None, [0.0, 0.0, 1.0, 1.0], screen_rect, [bg[0], bg[1], bg[2], bg[3] * opacity], false);
             }
             ElementKind::Map => push(None, [0.0, 0.0, 1.0, 1.0], screen_rect, [1.0, 1.0, 1.0, opacity], true),
-            k if k.has_text() => self.text(e, rect, opacity, place, &mut push, lookup),
+            k if k.has_text() => self.text(e, rect, opacity, place, &mut push, lookup, scroll),
             _ => {}
         }
     }
@@ -1086,6 +1090,7 @@ impl UiScene {
         place: &Placement,
         push: &mut impl FnMut(Option<ResourceId>, [f32; 4], [f32; 4], [f32; 4], bool),
         lookup: &mut Lookup,
+        scroll: Option<f64>,
     ) {
         let Some(t) = &e.text else { return };
         let Some(style) = t.style.and_then(|s| self.styles.get(&s)) else { return };
@@ -1111,10 +1116,14 @@ impl UiScene {
         let colour = [style.colour[0], style.colour[1], style.colour[2], style.colour[3] * opacity];
         let [aw, ah] = font.atlas_size;
         for (i, (quads, width)) in lines.iter().enumerate() {
-            let x0 = match t.justification {
-                1 => inner[0] + (inner[2] - width) * 0.5,
-                2 => inner[0] + inner[2] - width,
-                _ => inner[0],
+            let x0 = match (scroll, t.justification) {
+                // A scrolling text enters at its box's right edge and moves left at `ScrollRate` reference px/s
+                // (`Element::scroll_rate`: the original's event card, `ref/frontend-2026-10-10/o8..o10.png`).
+                // Model decision: once it has left the box it enters again.
+                (Some(since), _) => inner[0] + inner[2] - scroll_distance(since, e.scroll_rate, inner[2] + width),
+                (None, 1) => inner[0] + (inner[2] - width) * 0.5,
+                (None, 2) => inner[0] + inner[2] - width,
+                (None, _) => inner[0],
             };
             // Vertically the text sits by the element's anchor row: top-anchored labels at the top of their box
             // (the pause title, the speed and its unit), middle ones centred (menu rows), bottom ones at the
@@ -1144,6 +1153,13 @@ impl UiScene {
             }
         }
     }
+}
+
+/// How far a scrolling text has moved `since` seconds after it entered: `rate` px/s, starting over every `span`
+/// px (its box's width plus its own).
+fn scroll_distance(since: f64, rate: f32, span: f32) -> f32 {
+    let d = since * f64::from(rate);
+    if span > 0.0 { d.rem_euclid(f64::from(span)) as f32 } else { d as f32 }
 }
 
 /// Width of a cell of a stack running across: the rightmost edge of the elements that size the cell.
@@ -1346,6 +1362,8 @@ pub struct DrawOptions<'a> {
 pub struct UiAnim {
     triggers: HashMap<(u32, u32, u32, u32), (bool, f64)>,
     shown: HashMap<(u32, u32, u32), (f64, f64)>,
+    /// Scrolling texts, per (element, layout, cell): the text's hash, when it started and when it was last drawn.
+    scrolls: HashMap<(u32, u32, u32), (u64, f64, f64)>,
 }
 
 /// An element not drawn for this long (s) plays its transition-in again when it is drawn.
@@ -1356,6 +1374,7 @@ impl UiAnim {
     pub fn reset(&mut self) {
         self.triggers.clear();
         self.shown.clear();
+        self.scrolls.clear();
     }
 }
 
@@ -1462,6 +1481,23 @@ impl Tween {
 impl<'a> DrawOptions<'a> {
     pub fn new(layouts: Option<Box<dyn Fn(usize) -> bool + 'a>>, anim: Option<&'a mut UiAnim>, now: f64) -> Self {
         Self { layouts, anim, now, layout: 0, cell: u32::MAX, replacement: 0 }
+    }
+
+    /// Seconds a scrolling text has been scrolling: since the element appeared (was drawn after not being drawn)
+    /// or its text changed. `None` without `anim` (a still draw: the text sits at its box's left).
+    fn scroll_since(&mut self, e: &Element, text: &str) -> Option<f64> {
+        use std::hash::{Hash, Hasher};
+        let (now, layout, cell) = (self.now, self.layout, self.cell);
+        let anim = self.anim.as_deref_mut()?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        let hash = h.finish();
+        let entry = anim.scrolls.entry((e.id, layout, cell)).or_insert((hash, now, now));
+        if entry.0 != hash || now - entry.2 > REAPPEAR_GAP {
+            *entry = (hash, now, now);
+        }
+        entry.2 = now;
+        Some(now - entry.1)
     }
 
     /// The element's behaviours now: its own transition-in since it appeared (was drawn after not being
@@ -1836,6 +1872,7 @@ mod tests {
             margins: [0.0; 4],
             min_size: [0.0; 2],
             sizes_cell: false,
+            scroll_rate: 0.0,
             sub_image: None,
             stack: None,
             idle: Vec::new(),
@@ -1887,6 +1924,15 @@ mod tests {
         let wide = scene.draw([2560.0, 1080.0], lookup);
         assert!((wide[0].rect[0] + wide[0].rect[2] - (2560.0 - 15.0 - 0.75)).abs() < 1e-2, "{:?}", wide[0].rect);
         assert!((wide[0].rect[2] - 300.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn scrolling_text_enters_at_the_right_and_wraps() {
+        // 125 px/s in a 1000 px box: 150 px in after 1.2 s (the event card's o8 capture: the tip's left edge at
+        // x = 850 of 1280), and a 400 px text is back at the right edge after (1000 + 400) / 125 s.
+        assert!((super::scroll_distance(1.2, 125.0, 1400.0) - 150.0).abs() < 1e-3);
+        assert!((super::scroll_distance(5.36, 125.0, 1400.0) - 670.0).abs() < 1e-3);
+        assert!(super::scroll_distance(1400.0 / 125.0 + 0.008, 125.0, 1400.0) < 1.5);
     }
 
     #[test]
