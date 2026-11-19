@@ -4628,8 +4628,7 @@ on its bone every tick with the clip's velocity
 (zero across a cut), the root motion ignored; an opponent teleported onto the player's own start is left where it
 is (462174's `Racer[8]`: the original seats fewer opponents, our opponents' cars are a model); `Racer[n]` = grid
 slot n − 1; after the finish the AI drives the player along a road-graph route from the finish (the race route
-ends there); nested timeline controllers are not run, so the outro plays straight through; audio, post-processing,
-image palettes, UI layouts other than the letterbox, speech and music items are not played; the outro's results
+ends there); nested timeline controllers are not run, so the outro plays straight through; the picture items (PostFX states, time of day, ...) run in `sequence_picture.rs`; audio, UI layouts other than the letterbox, speech and music items are not played; the outro's results
 panels are the HUD's.
 
 ## Traffic and AI vehicles
@@ -5537,6 +5536,70 @@ the sequence object `0x10e48a`; items listed by `mwtool frontend --sequence 1107
 - **Timeline controllers**: at 1.3 s jump back to 1.15 s while `CollectablesVM.CameraSpeedwall.HasDownloaded`
   is false, at 1.233 s jump to 6.5 s once `…TimedOut`: the plate waits for the speed wall. Items are gated by
   `ShowMiniWall(NOT)`. Not run in the port (the clock runs straight, as the HUD's).
+
+## Sequence PostFX states and the picture items (2026-11-19, ported in `sequence_picture.rs`)
+
+The sequence items that change the picture or the environment (`mw_assets::sequence_picture`; vtables in
+`scratch/seq_vtables.txt` of the main checkout: slot 0 init, 2 prepare, 3 start, 5 update, 9 end). Item data =
+`*(item + 8) + 0x28` + `*(item + 0xc)`; its offsets are the GeneSys field offsets (`mwtool genesys-types`).
+
+- **`PostFXSequenceItem`** (factory `0x0086a630`, vtable 0x00ff2fec; 249 uses). Init (`0x00865ca0`, not in the
+  dump): an evaluator per curve, item +0x20 on `Intensity` (+0x24) when `090eb59d` (+0x116), +0x24 on `82d1338f`
+  (+0x5c) when `354b8d7c` (+0x117), with mode `1e1303f0` (+0x114) = 1 a pair at +0x28 on `1a62fa2c` / `1a62fa2d`
+  (+0x94 / +0xcc), with mode 2 a binding (+0x30) on the string `cb232034` (+0x104). Start `FUN_00863810`:
+  `FUN_0083d850`(game logic +0x2ef70, `PostFXState` +0x10c). Update `FUN_00863960`: amount → `FUN_0083da30`,
+  transition → `FUN_0083daf0`, mode 1 → `FUN_0083da90` with (x, y, x, x) = (`1a62fa2c`, `1a62fa2d`, …) (the
+  `unpcklps` at 0x00863c77), mode 2 → the binding's vector. End `FUN_00863de0` → `FUN_0083d9e0`. Curves are
+  evaluated at the item's normalised time (`FUN_00862590`(t, End − Start)). In the data mode is always 0, and only
+  one item sets the transition; 161 of 235 set the amount.
+- **The request list** (game logic +0x2ef70; the same block whose +0x38… the `PostFxOverrideSequenceItem` fills,
+  "Speed camera flash"): at +0x50 up to 3 entries of 0x30 bytes (count +0xe0): vector +0x0 (flag +0x2d), state
+  handle +0x10, stamp +0x18 (`FUN_0046ee00` + 8), references +0x20, amount +0x24 (flag +0x2c, default 1.0), transition
+  +0x28 (flag +0x2e). `FUN_0083d850` re-stamps and counts a known state; else, with 3 entries, drops the newest
+  (largest stamp; the last entry moves into it) and appends. `FUN_0083d9e0` / `FUN_0084a7d0`: one reference less, at
+  none removed (the last moves into it). The PostFX manager (`FUN_008ecf80` → `FUN_008e88d0`) keeps a slot (400
+  bytes from manager +0x10, count +0x12d0, first request slot +0x12e0) per entry, in the list's order: slot +0x0
+  state, +0x8 / +0x80 / +0xf8 the compiled bindings `582a5d55` / `b2bcd17a` / `ValueBinding` (counts +0x7c, +0xf4,
+  +0x16c), +0x170 vector (flag +0x18d), +0x180 amount (flag +0x18c), +0x184 transition (flag +0x18e). A new slot
+  (`FUN_008e48b0`) starts its amount at the state's `Value` (`b28ad39b`, +0xec).
+- **A slot per frame** (`FUN_008eccb0`, `this` = the slot: call at 0x008ed1f3): the enable binding (`582a5d55`) gates
+  the cubes; without the amount flag, the amount moves to the `ValueBinding`'s value by `ChangeBehaviour` (+0xf0;
+  `FUN_008e4970`: 0 jump, 1 linear at `8af3cdfc` (+0xe8) × dt, 2 `exp(−rate dt)` of the gap), clamped to [0, 1];
+  the transition (flag or `b2bcd17a`) only when the second keyframe `ccdbc904` (+0xdc) exists. Then, each block
+  with the amount through its `ValueModifier` (type 1 `powf(amount, value)` (`FUN_00ed9e1b` with xmm0 / xmm1, at
+  0x008e4b6b), 2 × value, clamped to [0, 1]; nothing at ≤ 0): colour cubes `FUN_008e4a90` (modifier `213edc81`: each
+  `ColourCubeSettings` with a cube sets the accumulator's cube and weight, one without but `c208764f` zeroes the
+  weight; the two land in manager +0x12e8…+0x12fc, weights clamped, handed out by `FUN_008e3b50`: the TintBlend's
+  two state slots); `0ee8a5ee` (+0xf4) bloom `FUN_008e9610` (modifier `dd9c7a34`, keyframe +0x80 unpacked by
+  `FUN_008e51b0` into +0x1300); `28e0a4ad` (+0xf7) vignette `FUN_008e4b30` (modifier `77ceda16`, keyframe +0x10
+  unpacked by `FUN_008e2660`: word 0 `Sharpness`, 4–7 inner, 8–11 outer, 12–13 centre, 14–15 `Scale`, 16–19 the
+  unnamed floats; the vector replaces words 12–13; lerp `FUN_008ee430` into +0x1340); `c2fb09c4` (+0xf5) depth of
+  field `FUN_008e4f20` (+0x1390); `b5880b63` (+0xf6) General `FUN_008e4d00` (modifier `f4d7592c`: words 0–3 =
+  `f75c9bd2`, `26e9df6b`, `5466cc6c`, `a548ceb6`, flag `fbf07f2f` == 1, words 8–11 from `.rdata` 0x010215a0 /
+  0x01021600; +0x1404 / +0x140c become the motion-blur amounts +0x1504 / +0x1508). Each block is the keyframe
+  `ccdbc907` (+0xd4) lerped to `ccdbc904` by the transition, then the accumulator lerped to it by the weight.
+- **Seen in the data**: the fade state `…7889` (66 uses): only the vignette, keyframe `…7887` with inner = outer =
+  black (the picture goes black with the amount). The intro of 462174 (1439074) holds `…162049` from 3 to 18.73 s
+  without the amount flag (so at its `Value` 1): a strong vignette (outer (0.047, 0.038, 0.072), `Scale` (0.85, 1),
+  `Sharpness` 0.374) and the General block (motion blur max 1). The race outros' `…19c8d6` (amount curve): cube
+  `…7899` and the General block.
+- **`DisableWorldRenderingSequenceItem`** (`0x0086a450`, vtable 0x00ff2ee8): start `FUN_008619c0` clears game logic
+  +0x2efb4 (= the PostFX block's +0x44) and queues `FUN_004b8b20`(1); end `FUN_00863270`: when `c38f91c8` (+0x24),
+  +0x2efb4 = 1 and `FUN_004b8b20`(0). `FUN_0046f730` copies +0x44 into the frame state +0x6af7af; its reader was
+  not followed.
+- **`ImagePaletteSequenceItem`** (`0x00830130`, vtable 0x00fee7a4): prepare `0x00827df0` requests palette
+  `1c29a1a2` (+0x24) on the UI image manager (`FUN_00796160`: up to 4, reference-counted) and returns whether it is
+  loaded (`FUN_007915f0`: state 2); start is the base's; end `FUN_00824bc0` → `FUN_007915b0` releases it.
+- **`SetTimeOfDaySequenceItem`** (`0x00860700`): init `0x00852c00` saves the time of day (`FUN_00897a20` on
+  `DAT_010edafc`, six words at item +0x1c…+0x30); start `FUN_00855480`: `FUN_00852c60` makes the times
+  (h × 3600 + m × 60 + s, × 3e6 ticks: `.rdata` 0x01029fd8 / 0x01029fdc / 0x00f9f604; a day 86400 s) and flags
+  (+0x5a → 1, +0x59 → 4, +0x5b `Thunder` → 8, +0x58 → 0x10, `d6529487` ≠ 0 → 0x20), `FUN_00847870` → `FUN_00847780`
+  posts the environment manager's messages 2 (`da6ac384` in its first two words; with `23198e19` > 0 the rest
+  describe a transition), 4 and 8; end `FUN_00850280` posts the saved words back.
+- **`EnvironmentTimelineSequenceItem`** (`0x00860880`): start `FUN_00851900` → `FUN_00844060`(timeline `5baabd32`,
+  1): message 7; end `0x0084fe90`: message 7 with no timeline.
+- Not followed: `SceneAnalysisSequenceItem`, `CameraShakeSequenceItem`, `SetVisionModeTypeSequenceItem`; the
+  receivers of the environment manager's messages (`FUN_0084c770`, `FUN_0084c6f0`, `FUN_0084eb60`, `FUN_0084c800`).
 
 ## Police and pursuit (ported) (2026-11-18)
 

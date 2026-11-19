@@ -635,6 +635,9 @@ pub enum ItemKind {
     },
     /// `MusicStateSequenceItem`: sets the dynamic music manager's state name ("Mapscreen", "Multiplayer").
     MusicState(String),
+    /// The picture and environment items (PostFX states, image palettes, world rendering, time of day,
+    /// environment timeline, ...): `crate::sequence_picture`.
+    Picture(crate::sequence_picture::PictureItem),
     /// Audio, post-processing, speech, music and the other item types not ported (type name).
     Other(String),
 }
@@ -730,6 +733,7 @@ impl Sequence {
                 ItemKind::Wave(_) => "Wave".into(),
                 ItemKind::SetSongList { .. } => "SetSongList".into(),
                 ItemKind::MusicState(_) => "MusicState".into(),
+                ItemKind::Picture(p) => p.name().into(),
                 ItemKind::Other(n) => n.clone(),
             };
             match counts.iter_mut().find(|(n, _)| *n == name) {
@@ -1140,7 +1144,8 @@ impl<'a> SequenceContext<'a> {
                 flags: [0x3c4e_5e2b, 0xf282_51e6, 0xcb97_beb9].map(|k| boolean(item, k).unwrap_or(false)),
             },
             "MusicStateSequenceItem" => ItemKind::MusicState(string(item, h::STATE)),
-            other => ItemKind::Other(other.to_string()),
+            other => crate::sequence_picture::PictureItem::parse(other, item)
+                .map_or_else(|| ItemKind::Other(other.to_string()), ItemKind::Picture),
         }
     }
 }

@@ -21,7 +21,7 @@
 //! Model decisions (as the other two players): the layouts draw in the letterboxed 1280 × 720 frame with its black
 //! bars, a movie fills that frame under the layouts, `UISequences.Params[n].TextN` reads "" (no text parameter),
 //! elements of unported shaders (`frontend::UNPORTED_SHADERS`) are left out. Not played: `SetUICamera`,
-//! `AdapterHost`, `ImagePaletteSequenceItem`, the bus mixer channels (the waves play at their own gain),
+//! `AdapterHost` (picture items such as `ImagePaletteSequenceItem` and the PostFX states: `sequence_picture.rs`), the bus mixer channels (the waves play at their own gain),
 //! `RaceCarEffectSequenceItem`, `ListenerSequenceItem`, the recap's `EventTrigger` (what the logic does with it
 //! was not traced), streamed images (no `Transitions.Image` slots here), the take's depth of field and motion blur.
 
@@ -99,6 +99,20 @@ impl UiSequencePlayer {
     /// The feedback queues' sequences that play now (`feedback.rs`; drawn after the logic's).
     pub fn show_feedback(&mut self, wanted: Vec<Shown>) {
         self.feedback = wanted;
+    }
+
+    /// Every playing sequence and conducted child with its clock (`sequence_picture.rs` runs their picture items).
+    pub(crate) fn clocks(&self) -> Vec<(String, &Sequence, f32)> {
+        let mut out = Vec::new();
+        for p in &self.playing {
+            out.push((p.key.clone(), &*p.seq, p.clock));
+            for (&k, &t) in &p.children {
+                if let ItemKind::Conductor(child) = &p.seq.items[k].kind {
+                    out.push((format!("{}/{k}", p.key), &**child, t));
+                }
+            }
+        }
+        out
     }
 }
 

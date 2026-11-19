@@ -383,6 +383,7 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ),
                 ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
                 ItemKind::MusicState(s) => format!("music state {s:?}"),
+                ItemKind::Picture(p) => picture(p),
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
@@ -523,5 +524,35 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
         if let ItemKind::Conductor(s) = &i.kind {
             print_ui_sequence(s, depth + 2);
         }
+    }
+}
+
+/// One line for a picture / environment item (`mw_assets::sequence_picture`).
+fn picture(p: &mw_assets::sequence_picture::PictureItem) -> String {
+    use mw_assets::sequence_picture::PictureItem as P;
+    let id = |h: &Option<mw_bundle::ResourceId>| h.map_or("-".to_string(), |h| format!("{:x}", h.0 & 0xFF_FFFF));
+    match p {
+        P::PostFx(f) => format!(
+            "PostFX state {}{}{}{}",
+            id(&f.state),
+            if f.set_intensity { " (intensity curve)" } else { "" },
+            if f.set_transition { " (transition curve)" } else { "" },
+            if f.mode != 0 { format!(" (vector mode {})", f.mode) } else { String::new() }
+        ),
+        P::ImagePalette { palette } => format!("image palette {palette}"),
+        P::DisableWorldRendering { restore } => format!("disable world rendering (restore {restore})"),
+        P::SetTimeOfDay(t) => format!(
+            "set time of day {:02}:{:02}:{:02} (time0 {:02}:{:02}:{:02}, flags {:#x}, {})",
+            t.time1.hours,
+            t.time1.minutes,
+            t.time1.seconds,
+            t.time0.hours,
+            t.time0.minutes,
+            t.time0.seconds,
+            t.flags,
+            t.d6529487
+        ),
+        P::EnvironmentTimeline { timeline } => format!("environment timeline {}", id(timeline)),
+        other => other.name().to_string(),
     }
 }

@@ -105,6 +105,14 @@ pub struct PostView {
     /// contrast c. `FUN_008ecf80` writes the PostFX state's +0x1660 = property 0 × 0.6 (`.rdata` 0x010219a4) and
     /// +0x1664 = property 1 × (0.8 above 0, else 0.4; 0x010219a0 / 0x00fae200), the terms `FUN_008c9e40` adds.
     pub override_grade: Vec2,
+    /// The sequences' PostFX state slots in order (`sequence_picture.rs`): vignette and bloom blended over the
+    /// base (`FUN_008e4b30`, `FUN_008e9610`).
+    pub post_fx_slots: Vec<crate::sequence_picture::SlotBlend>,
+    /// The states' colour cubes (TintBlend's two state slots, `FUN_008e4a90`) as one cube, and their summed
+    /// weight: the TintBlend scales the weights to sum 1 when they exceed it (`FUN_008c9e40`), so with the
+    /// environment pair's 1 the grade is (env + w · state) / (1 + w).
+    pub state_cube: Option<Handle<Image>>,
+    pub state_cube_weight: f32,
 }
 
 fn update_post_view(mut view: ResMut<PostView>, key_light: Query<&GlobalTransform, With<crate::weather::KeyLight>>) {
@@ -397,6 +405,7 @@ fn init_pipelines(
                 texture_depth_2d(),
                 texture_3d(TextureSampleType::Float { filterable: true }),
                 sampler(SamplerBindingType::Filtering),
+                texture_3d(TextureSampleType::Float { filterable: true }),
             ),
         ),
     );
@@ -478,9 +487,11 @@ fn init_pipelines(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_buffer(
     tonemap: Option<Res<GameTonemap>>,
     post_view: Option<Res<PostView>>,
+    images: Res<RenderAssets<GpuImage>>,
     views: Query<
         &bevy::render::view::ExtractedView,
         (With<ViewTarget>, Without<crate::reflection::PlanarReflectionCamera>),
@@ -500,7 +511,27 @@ fn prepare_buffer(
         .map_or((Vec3::NEG_Z, 0.1), |v| (v.world_from_view.forward().as_vec3(), v.clip_from_view.w_axis.z));
     let to_sun = post_view.as_ref().map_or(Vec3::Y, |p| p.to_sun);
     let (contrast, brightness) = sun_grade(s, forward, to_sun);
-    let extra = post_view.map_or(Vec2::ZERO, |p| p.override_grade);
+    let extra = post_view.as_ref().map_or(Vec2::ZERO, |p| p.override_grade);
+    // The sequences' PostFX states over the base: the default keyframe's vignette and the environment's bloom
+    // (`FUN_008ecf80`: slot by slot, `FUN_008ee430` / `FUN_008e9610` lerps by the slot's weight).
+    let mut vignette = t.post_fx.vignette;
+    let mut bloom = crate::sequence_picture::BloomWords {
+        colour: s.bloom_colour,
+        intensity: s.bloom_intensity,
+        weights: s.bloom_weights,
+    };
+    for slot in post_view.iter().flat_map(|p| &p.post_fx_slots) {
+        if let Some((w, v)) = &slot.vignette {
+            vignette = crate::sequence_picture::lerp_vignette(&vignette, v, *w);
+        }
+        if let Some((w, b)) = &slot.bloom {
+            bloom = bloom.lerp(b, *w);
+        }
+    }
+    let state_cube = post_view
+        .as_ref()
+        .filter(|p| p.state_cube.as_ref().is_some_and(|h| images.get(h).is_some()))
+        .map_or(0.0, |p| p.state_cube_weight);
     let (contrast, brightness) = (contrast + extra.y, brightness + extra.x);
     // MW_POST_LOG=1: the final pass's grade and the depth-of-field constants, about once a second.
     if std::env::var_os("MW_POST_LOG").is_some() {
@@ -515,9 +546,9 @@ fn prepare_buffer(
             );
         }
     }
-    let vignette_on = std::env::var_os("MW_NO_VIGNETTE").is_none() && t.post_fx.vignette.scale != [0.0; 2];
+    let vignette_on = std::env::var_os("MW_NO_VIGNETTE").is_none() && vignette.scale != [0.0; 2];
     let [vignette_a, vignette_d, vignette_centre_scale, vignette_angle] = if vignette_on {
-        vignette_constants(&t.post_fx.vignette, contrast)
+        vignette_constants(&vignette, contrast)
     } else {
         // Weight 0 everywhere and factor 1: A = 0, D = 1.
         [Vec4::new(0.0, 0.0, 0.0, -1.0), Vec4::ONE, Vec4::new(0.5, 0.5, 0.0, 0.0), Vec4::ZERO]
@@ -530,19 +561,19 @@ fn prepare_buffer(
         // B with bloom on (`FUN_0089d5c0`): the environment keyframe's colour and intensity in free roam
         // (decomp.md "Where the block comes from"); off: (1, 1, 1, 0).
         bloom: if bloom_enabled() {
-            Vec3::from(s.bloom_colour).extend(s.bloom_intensity)
+            Vec3::from(bloom.colour).extend(bloom.intensity)
         } else {
             Vec4::new(1.0, 1.0, 1.0, 0.0)
         },
         camera: Vec4::new(s.min, s.max, s.bias, 0.0),
         exposure: Vec4::new(0.0, s.tolerance, s.speed, t.dt),
         setting: Vec4::new(s.target_high, s.target_low, s.luminance_high, s.luminance_low),
-        flags: Vec4::new(f32::from(u8::from(t.reset)), f32::from(u8::from(t.colour_cube.is_some())), 0.0, 0.0),
+        flags: Vec4::new(f32::from(u8::from(t.reset)), f32::from(u8::from(t.colour_cube.is_some())), state_cube, 0.0),
         grade: Vec4::new(contrast, brightness, f32::from(u8::from(dof_enabled())), 0.0),
         dof: Vec4::new(near, dof_coc_infinity(), DOF_FOCUS, 0.0),
     });
     buffer.0.write_buffer(&device, &queue);
-    for (b, [z, w]) in bloom_buffers.0.iter_mut().zip(bloom_add_weights(s.bloom_weights)) {
+    for (b, [z, w]) in bloom_buffers.0.iter_mut().zip(bloom_add_weights(bloom.weights)) {
         b.set(BloomUniform { weights: Vec4::new(z, w, s.bias, 0.0) });
         b.write_buffer(&device, &queue);
     }
@@ -557,6 +588,7 @@ fn game_tonemap(
     buffer: Res<TonemapBuffer>,
     bloom_buffers: Res<BloomBuffers>,
     settings: Option<Res<GameTonemap>>,
+    post_view: Option<Res<PostView>>,
     images: Res<RenderAssets<GpuImage>>,
     fallback: Res<FallbackImage>,
     mut frame: Local<usize>,
@@ -593,6 +625,9 @@ fn game_tonemap(
         Some(c) => (&c.texture_view, &c.sampler),
         None => (&fallback.d3.texture_view, &fallback.d3.sampler),
     };
+    // The sequences' PostFX state cube (`sequence_picture.rs`; weight in the uniform's flags.z).
+    let state_cube = post_view.as_ref().and_then(|p| p.state_cube.as_ref()).and_then(|h| images.get(h));
+    let state_cube_view = state_cube.map_or(&fallback.d3.texture_view, |c| &c.texture_view);
     let (read, write) = (&p.states[(*frame + 1) % 2], &p.states[*frame % 2]);
     *frame += 1;
     let device = ctx.render_device().clone();
@@ -691,7 +726,16 @@ fn game_tonemap(
         device.create_bind_group(
             "game_post_bind_group",
             &post_layout,
-            &BindGroupEntries::sequential((uniform.clone(), colour, &p.sampler, dof, depth, cube_view, cube_sampler)),
+            &BindGroupEntries::sequential((
+                uniform.clone(),
+                colour,
+                &p.sampler,
+                dof,
+                depth,
+                cube_view,
+                cube_sampler,
+                state_cube_view,
+            )),
         )
     };
     if dof_enabled() {

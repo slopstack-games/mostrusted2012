@@ -21,7 +21,7 @@ struct Tonemap {
     camera: vec4<f32>,
     exposure: vec4<f32>,
     setting: vec4<f32>,
-    // y = 1 applies the colour cube
+    // y = 1 applies the colour cube; z = the PostFX states' cube weight (sequence_picture.rs)
     flags: vec4<f32>,
     vignette_a: vec4<f32>,
     vignette_d: vec4<f32>,
@@ -41,6 +41,8 @@ struct Tonemap {
 @group(0) @binding(4) var depth: texture_depth_2d;
 @group(0) @binding(5) var colour_cube: texture_3d<f32>;
 @group(0) @binding(6) var cube_sampler: sampler;
+// The sequences' PostFX state cube (TintBlend's state slots, FUN_008e4a90).
+@group(0) @binding(7) var state_cube: texture_3d<f32>;
 
 // max(K.x × d + K.y, K.z) of the game's device depth, written in view depth.
 fn coc_at(p: vec2<i32>) -> f32 {
@@ -85,6 +87,12 @@ fn final_pass(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     } else {
         // The identity cube under clamp-to-edge addressing.
         g = saturate((coord - 1.0 / 32.0) * (16.0 / 15.0));
+    }
+    // TintBlend (FUN_008c9e40): the weights above 1 in sum are scaled to 1; the environment pair weighs 1, so
+    // the state cube's w gives (env + w · state) / (1 + w) (a weighted sum of entries, linear in the lookup).
+    if tm.flags.z > 0.0 {
+        let s = textureSampleLevel(state_cube, cube_sampler, saturate(coord), 0.0).rgb;
+        g = (g + tm.flags.z * s) / (1.0 + tm.flags.z);
     }
     return vec4(srgb_to_linear(g), c.a);
 }

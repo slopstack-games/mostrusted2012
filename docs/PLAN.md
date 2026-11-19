@@ -504,7 +504,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    order, MSVC number formatting; base, string, math, table); all 115 chunks run their main function and
    `Construct` (`mwtool lua`). One state per widget (widget +0x84, decomp.md "Widget definitions (JSON) and widget scripts"). Open: the
    game's GC stepping.
-6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
+6. `[~]` **Sequences**: the missing `*SequenceItem` types (73 in the data). 2026-11-19: the picture items
+   (`sequence_picture.rs`, decomp.md "Sequence PostFX states"): PostFX states (vignette, bloom, colour cubes drawn;
+   motion blur and depth of field logged), image palettes, world rendering (state only), time of day, timeline.
 7. `[~]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD

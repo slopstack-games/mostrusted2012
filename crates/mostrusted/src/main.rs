@@ -85,6 +85,7 @@ mod reflection;
 mod replay;
 mod roadblock;
 mod sequence_fx;
+mod sequence_picture;
 mod settings;
 mod sfx;
 mod shadow_cull;
@@ -1178,6 +1179,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         .add_plugins((
             world_coronas::WorldCoronasPlugin,
             sequence_fx::SequenceFxPlugin,
+            sequence_picture::SequencePicturePlugin,
             traffic_lamps::TrafficLampsPlugin,
         ))
         .add_plugins(car_lights::CarLightsPlugin)
