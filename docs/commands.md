@@ -295,6 +295,7 @@ MW_MAP_LOG=1 MW_INPUT_SCRIPT="0.5 lx 1; 0.6 lx 0; 1.5 shot <scratch>/m.png; 2 qu
 # Races (race.rs, ai.rs, cutscene.rs): the event's intro, AI opponents on the grid, gates, laps, results
 ./target/release/mwtool events [<id> [--png f]] [--all]  # offline events (each opponent's rollout car, colours, Most Wanted / cop flags); mwtool camera-take [take] (ICE cameras)
 ./target/release/mostrusted --race 462174                # CONTINENTAL DRIFT; --no-cutscenes, --spawn= overrides the start
+#   the intros' spawn items (cutscene_spawns.rs; `mwtool events <id>` lists them): --race 906146 (HARBOR RUN: animated cop car, traffic, two Chasing cops)
 ./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race ... (gates, laps, wrong way)
 # MW_RACE_TEST_MISS=<k> skips route entry k (missed_at_skip=); MW_RACE_TEST_AFTER=<s> waits s after the event's end
 # (racers_left=); MW_RACE_TEST_JACK=1 then runs the jack-spot swap; MW_RACE_WW_TRACE=1 logs the wrong-way machine

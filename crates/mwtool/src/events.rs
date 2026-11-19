@@ -383,6 +383,49 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ),
                 ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
                 ItemKind::MusicState(s) => format!("music state {s:?}"),
+                ItemKind::AddRaceCar(c) => format!(
+                    "add race car {} paint {} (binding {:?}, existing {}, 824d41fe {}): {} clip(s) {:?}{}",
+                    c.vehicle,
+                    c.paint,
+                    c.car_binding,
+                    c.existing,
+                    c.suspend,
+                    c.clips.len(),
+                    c.clips.iter().map(|k| k.keys.len()).collect::<Vec<_>>(),
+                    if c.other_behaviours.is_empty() { String::new() } else { format!(" + {:?}", c.other_behaviours) }
+                ),
+                ItemKind::SpawnCop(c) => format!(
+                    "spawn AI cop: type {} car {:?} at trigger {} {:?} dir {:?}{} at {} mph, command {:?}, release {}",
+                    c.ai_type,
+                    c.vehicle,
+                    c.trigger,
+                    c.position,
+                    c.direction,
+                    if c.resolved { "" } else { " (unresolved)" },
+                    c.speed_mph,
+                    mw_assets::sequence::cop_command(c.command),
+                    c.release
+                ),
+                ItemKind::Gameplay { data, trigger_type } => format!("gameplay switch {trigger_type} data {data}"),
+                ItemKind::AnimatedTraffic(a) => {
+                    format!(
+                        "animated traffic car {} ({} frames, first key {:?})",
+                        a.vehicle,
+                        a.keys.len(),
+                        a.key_at(0.0)
+                    )
+                }
+                ItemKind::OverrideTraffic(v) => format!("override available traffic {v:?}"),
+                ItemKind::SpawnTraffic(s) => format!("spawn traffic {} at triggers {:?}", s.vehicle, s.triggers),
+                ItemKind::DynamicEntity(d) => {
+                    format!(
+                        "dynamic entity {:?} at {:?} ({} behaviours)",
+                        d.world_component,
+                        d.position,
+                        d.behaviours.len()
+                    )
+                }
+                ItemKind::PlayerDamage(d) => format!("player damage {:?} (posted {:?})", d.fields, d.posted()),
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
@@ -505,6 +548,14 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
             ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
             ItemKind::MusicState(s) => format!("music state {s:?}"),
             ItemKind::Other(n) => n.clone(),
+            ItemKind::AddRaceCar(c) => format!("add race car {}", c.vehicle),
+            ItemKind::SpawnCop(c) => format!("spawn AI cop {}", c.ai_type),
+            ItemKind::Gameplay { data, trigger_type } => format!("gameplay switch {trigger_type} data {data}"),
+            ItemKind::AnimatedTraffic(a) => format!("animated traffic car {}", a.vehicle),
+            ItemKind::OverrideTraffic(v) => format!("override available traffic {v:?}"),
+            ItemKind::SpawnTraffic(s) => format!("spawn traffic {}", s.vehicle),
+            ItemKind::DynamicEntity(d) => format!("dynamic entity {:?}", d.world_component),
+            ItemKind::PlayerDamage(d) => format!("player damage {:?}", d.fields),
             ItemKind::Camera(shots) => {
                 let s: Vec<String> = shots
                     .iter()

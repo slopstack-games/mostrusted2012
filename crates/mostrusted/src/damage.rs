@@ -91,6 +91,14 @@ impl CarDamage {
         self.dirty = true;
     }
 
+    /// Set the zone damage levels (0..1, in clip order; `SetPlayerDamageSequenceItem`, `cutscene_spawns.rs`).
+    pub fn set_levels(&mut self, levels: &[f32]) {
+        for (l, v) in self.levels.iter_mut().zip(levels) {
+            *l = v.clamp(0.0, 1.0);
+        }
+        self.dirty = true;
+    }
+
     /// Set the animated body part positions; re-poses the skeleton when they changed.
     pub fn set_parts(&mut self, parts: &[f32]) {
         if self.parts != parts {

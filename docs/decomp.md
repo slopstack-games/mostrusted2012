@@ -4632,6 +4632,64 @@ ends there); nested timeline controllers are not run, so the outro plays straigh
 image palettes, UI layouts other than the letterbox, speech and music items are not played; the outro's results
 panels are the HUD's.
 
+### Sequence spawn items (2026-11-19, ported in `mw_assets::sequence` spawns and `cutscene_spawns.rs`)
+
+The item loop `FUN_00a42b90` drives every item through its vtable: +4 lead time (an item is "prepared" from
+start − lead), +8 prepare (called until it returns true), +0xc enter (once in range), +0x10 / +0x14 update, +0x28
+exit (outside the range; the default `0x005421a0` jumps to +0x24 stop). Item data offsets are the
+`Genesys.Gen.<type>` field offsets (`mwtool genesys-types`); the handlers read:
+- **`AddRaceCarSequenceItem`** (factory 0x00860a60, vtable 0x00ff1c08): lead 2 s (`0x0085edd0` → `.rdata`
+  0x00f8a808). Prepare `FUN_00855730` (state +0x28): vehicle and colour from `VehicleComponent` (+0x2c) /
+  `VehiclePaint` (+0x30) or, when the binding +0x24 is set (`Players.LocalPlayer.RaceCarIndex`, ...), the bound
+  car's vehicle and colour (`FUN_00850df0` → `FUN_00573670` / `FUN_0058f1d0`); with +0x3a (`8f98df6b`) sequence
+  message 4 (`FUN_00853ef0`), else a new car (`FUN_00853f40` → `FUN_0066f8c0`, type 0xb, origin, identity) owned by
+  the item (+0x34). Ready when `FUN_005733b0`(car); with +0x39 (`824d41fe`) message 0x36 flag 0. Enter
+  `FUN_00850d80`: each `Behaviours` handle → `FUN_00844c60`(car, behaviour). Stop `FUN_00853da0`: behaviours removed
+  (`FUN_00844cb0`); not owned → message 5 (+ 0x36 flag 1 with +0x39); owned → `FUN_005a0ed0` / `FUN_0066f950`
+  message 1. Update (+0x14 `0x008504b0`) does nothing.
+- **`SpawnAICopCar`** (0x00860c40, vtable 0x00ff1d10): enter `0x00850380` clears car +0x1c and done +0x20; update
+  `FUN_00852e40` spawns once: AI type = the `AIPlayerInstance`* (+0x74) `Type` (+0x18) with its colours +0x14 /
+  +0x0c, else +0x68 (`FUN_006e6140`: the AI-type list by id), else the default (`FUN_006bf330` → `FUN_00513f60`);
+  place = `SpawnTrigger` (+0x6c) point (`FUN_0053c020`) and direction (`FUN_0042f250`), else `PositionBinding`
+  (+0x58, a zero result is no spawn) / direction binding (+0x50, normalised) over `Position` (+0x40) / `Direction`
+  (+0x30); `FUN_006ce030`(type, position, direction, speed (+0x70) × direction × mph→m/s (`.bss` 0x0118a010), colours)
+  = the racers' spawn (slots 12..23); +0x60 non-empty → `FUN_006b8a20` (name hash at car +0x5cc); then the
+  behaviour command at car +0x580 (`FUN_006b8a00`) from +0x78: 0 IdleLights (8), 1 Chasing (9), 2 LowSpeedChasing
+  (0x16), 3 FreeRoam (3), 4 WaitingInterceptor (0x10) (names: table `.data` 0x010c4360; the command → driver state
+  map is `FUN_004efc40`; the spawn's default command is `FUN_006b8a40`(type kind)). Stop `FUN_00852de0`: with +0x7a
+  (`aa2af3d8`) the car is released (`FUN_006ce180`(slot, 3)) once `FUN_006b8840` allows; else it stays.
+- **`GameplaySequenceItem`** (0x00860a00): enter `FUN_00854990` switches on `TriggerType` (+0x28) with `Data`
+  (+0x24): 0 sets GMM+0x2e7c; **1 sets the player's heat level** (`FUN_006675e0`: record +0xa8 = `FUN_00667310`(Data),
+  a rise posts a scoring action); 2 message 0xb; 3 `FUN_006561a0`; 5 GMM+0x2ead; 6 `FUN_008433b0`(1) (stop: 0); 7
+  `FUN_006cd340` on the player (the respawn; stop repeats it once); 8 `FUN_006f5d50`(Data, identity); **0xc releases
+  the AI cars of type Data** (all when 0; `FUN_006ce180`(slot, 4) where `FUN_006ba2a0` and `FUN_006b8840`); 0xd
+  `FUN_006cd360`; 0xe a heat value from a list entry (+0x10e) via `FUN_006bdac0`; 0xf message 0x1a and
+  `FUN_00658140`; 0x10 `FUN_006ca4f0`; 0x13 `FUN_008456d0`. Values in the data: 1 (58), 12 (17), 0 (16), 7, 14, 15.
+- **`SpawnAnimatedTrafficSequenceItem`** (0x00860e80): update `FUN_008532c0` samples `Animation` (+0x30) on
+  `Skeleton` (+0x38) at the local time clamped to the clip, takes bone 1's matrix (and bone 2's when the skeleton has
+  more than two bones) and creates (`FUN_00845ff0`, first update: id from `DAT_01181400`, `VehicleComponent` +0x40,
+  payload +0x28, flag +0x44) or moves (`FUN_008460c0`) a traffic car; stop `FUN_008503a0` → `FUN_00846080`.
+- **`OverrideAvailableTrafficSequenceItem`** (0x00860f40): enter `FUN_00851f00` → `FUN_00846480`(Vehicles, count):
+  traffic message 0x17 (≤ 10 ids) → `FUN_00606b30`: `FUN_005f9480`(0), override flag `world+0xa2bdd`, the types'
+  indices at `+0xa0ec0` (count `+0xa2bdb`); stop `FUN_00850050` → message 0x18 (flags cleared). The availability
+  pass `FUN_005f0670` (from `FUN_0060ebc0` / `FUN_005fb8f0`) then marks only those types available
+  (`+0xa31e0`) instead of the region's table (`+0x67d84`).
+- **`SetPlayerDamageSequenceItem`** (0x00860dc0): enter `FUN_00855110`: the player's car (+0xa0) unless the item's
+  +0x20; the eight values (+0x28 … +0x44, percent × 0.01 `.rdata` 0x00f9d474) go out with sequence message 0x23 in the
+  order +0x28, +0x38, +0x34, +0x44, +0x2c, +0x3c, +0x30, +0x40 after max(all) × the car's +3000; flags +0x48 / +0x49.
+- **`SpawnDynamicEntitySequenceItem`** (lead `0x0085eec0`, prepare `FUN_008534f0`, enter `FUN_00855520`, stop
+  `FUN_008503e0`) and **`SpawnTrafficSequenceItem`** (enter `FUN_00853660`): read (fields in
+  `mw_assets::sequence::spawns`), handlers not read. `SpawnTraffic` appears in no event sequence.
+
+Ported (`cutscene_spawns.rs`): AddRaceCar (a loader car of the vehicle, posed on its clip every tick, removed at the
+stop), SpawnAICopCar (a police cop on the trigger, rolling, its brain given the command's role), animated traffic
+(`traffic::spawn_scripted`), the traffic override (`TrafficSystem::set_vehicle_override`), the player's damage. Model
+decisions: cars are ordered from the sequence's start; a bound AddRaceCar moves the racer's own car; paint index 0;
+command → role (Chasing / LowSpeedChasing chase, FreeRoam patrol, others wait); the damage message's order is taken
+as the damage clips' zone order (front, rear, left, right, front-left, front-right, rear-left, rear-right; the
+message 0x23 consumer was not found); with the override the flow types' listed entries keep their proportions, or
+the listed types are picked evenly. Not carried out: Gameplay, SpawnDynamicEntity, SpawnTraffic (logged).
+
 ## Traffic and AI vehicles
 
 First pass (session 5); the lane format is in formats.md "TrafficLaneData (0x701)". What is traced so far:

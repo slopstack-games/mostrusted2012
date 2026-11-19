@@ -39,6 +39,9 @@ use mw_formats::{Animation, Trigger, TriggerShape};
 
 use crate::{AssetStore, Error, Result};
 
+mod spawns;
+pub use spawns::{AddRaceCar, AnimatedTraffic, DynamicEntity, PlayerDamage, SpawnCop, SpawnTraffic, cop_command};
+
 mod h {
     use mw_formats::genesys::field_hash;
 
@@ -635,6 +638,25 @@ pub enum ItemKind {
     },
     /// `MusicStateSequenceItem`: sets the dynamic music manager's state name ("Mapscreen", "Multiplayer").
     MusicState(String),
+    /// `AddRaceCarSequenceItem`: a car driven by clips for the item's span ([`AddRaceCar`]).
+    AddRaceCar(Box<AddRaceCar>),
+    /// `SpawnAICopCar`: an AI cop on a trigger with a command ([`SpawnCop`]).
+    SpawnCop(Box<SpawnCop>),
+    /// `GameplaySequenceItem`: a gameplay switch (`FUN_00854990` by `TriggerType`, with `Data`).
+    Gameplay {
+        data: u32,
+        trigger_type: u16,
+    },
+    /// `SpawnAnimatedTrafficSequenceItem`: a traffic car on a clip ([`AnimatedTraffic`]).
+    AnimatedTraffic(Box<AnimatedTraffic>),
+    /// `OverrideAvailableTrafficSequenceItem`: traffic `VehicleComponent` ids traffic picks from meanwhile.
+    OverrideTraffic(Vec<u32>),
+    /// `SpawnTrafficSequenceItem` ([`SpawnTraffic`]).
+    SpawnTraffic(Box<SpawnTraffic>),
+    /// `SpawnDynamicEntitySequenceItem` ([`DynamicEntity`]).
+    DynamicEntity(Box<DynamicEntity>),
+    /// `SetPlayerDamageSequenceItem` ([`PlayerDamage`]).
+    PlayerDamage(PlayerDamage),
     /// Audio, post-processing, speech, music and the other item types not ported (type name).
     Other(String),
 }
@@ -730,6 +752,14 @@ impl Sequence {
                 ItemKind::Wave(_) => "Wave".into(),
                 ItemKind::SetSongList { .. } => "SetSongList".into(),
                 ItemKind::MusicState(_) => "MusicState".into(),
+                ItemKind::AddRaceCar(_) => "AddRaceCar".into(),
+                ItemKind::SpawnCop(_) => "SpawnCop".into(),
+                ItemKind::Gameplay { .. } => "Gameplay".into(),
+                ItemKind::AnimatedTraffic(_) => "AnimatedTraffic".into(),
+                ItemKind::OverrideTraffic(_) => "OverrideTraffic".into(),
+                ItemKind::SpawnTraffic(_) => "SpawnTraffic".into(),
+                ItemKind::DynamicEntity(_) => "DynamicEntity".into(),
+                ItemKind::PlayerDamage(_) => "PlayerDamage".into(),
                 ItemKind::Other(n) => n.clone(),
             };
             match counts.iter_mut().find(|(n, _)| *n == name) {
@@ -853,12 +883,14 @@ pub struct SequenceContext<'a> {
     /// Flatten conductor sequences into their parent (the cutscenes); `false` keeps each as an
     /// [`ItemKind::Conductor`] with its own controllers (the front end's looping image sequence).
     pub flatten: bool,
+    /// `AIPlayerType` id → its rollout's vehicle (`spawns`), read on first use.
+    ai_vehicles: std::sync::OnceLock<HashMap<u32, u32>>,
 }
 
 impl<'a> SequenceContext<'a> {
     pub fn new(store: &'a AssetStore) -> Result<Self> {
         let triggers = store.trigger_data()?.triggers.into_iter().map(|t| (t.id, t)).collect();
-        Ok(Self { triggers, store, depth: 0, flatten: true })
+        Ok(Self { triggers, store, depth: 0, flatten: true, ai_vehicles: Default::default() })
     }
 
     fn animation(&self, id: Option<ResourceId>) -> Option<Animation> {
@@ -1140,7 +1172,7 @@ impl<'a> SequenceContext<'a> {
                 flags: [0x3c4e_5e2b, 0xf282_51e6, 0xcb97_beb9].map(|k| boolean(item, k).unwrap_or(false)),
             },
             "MusicStateSequenceItem" => ItemKind::MusicState(string(item, h::STATE)),
-            other => ItemKind::Other(other.to_string()),
+            other => self.spawn_item(other, item).unwrap_or_else(|| ItemKind::Other(other.to_string())),
         }
     }
 }

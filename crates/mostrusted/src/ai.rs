@@ -37,6 +37,7 @@ impl Plugin for AiPlugin {
             arrived: Vec::new(),
             spawned: vec![false; self.cars.len()],
             cops: Vec::new(),
+            scripted: Vec::new(),
         })
         .init_resource::<AiSettings>()
         .add_systems(Startup, |game: Res<crate::Game>, mut s: ResMut<AiSettings>| {
@@ -117,11 +118,17 @@ pub struct Opponents {
     spawned: Vec<bool>,
     /// Cop cars that have arrived (slots from `police::SLOT_BASE` up, less the base): `police.rs` takes them.
     pub cops: Vec<(usize, Box<CarSpec>, CarParts)>,
+    /// Cars of the sequences' spawn items (slots from `cutscene_spawns::SLOT` up, less the base).
+    pub scripted: Vec<(usize, Box<CarSpec>, CarParts)>,
 }
 
 impl Opponents {
     /// Called by the loader-message pump when an opponent's car is ready.
     pub fn arrived(&mut self, slot: usize, spec: Box<CarSpec>, parts: CarParts) {
+        if let Some(n) = slot.checked_sub(crate::cutscene_spawns::SLOT) {
+            self.scripted.push((n, spec, parts));
+            return;
+        }
         if let Some(cop) = slot.checked_sub(crate::police::SLOT_BASE) {
             self.cops.push((cop, spec, parts));
             return;
