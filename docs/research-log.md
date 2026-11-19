@@ -11,6 +11,24 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: skids and crashes "very loud, distorted, layered, more and more": the skid channels' gain multiplied per surface set
+
+User report with a recording and `MW_AUDIO_METER=1` / `MW_SFX_TRACE` of the played run: the vehicle bank read up to
++17 dBFS before its limiter (peaks 37–43 of full scale, out −0.6 dBFS: a square wave) for some seconds in every slide
+at speed and after hits; normal driving −20 dBFS. Reproduced offline with the new `mwtool vehicle-sound <out.wav>
+--trace <MW_SFX_TRACE file>` (peak 92; the same with `--dry`, so not a plug-in): the mixer channels `…87ecc` /
+`…87ecb` stood at ×2067 of their own gain and `…87f7b` at ×157. Cause: the skid sequences (`…f4eae` and the others)
+are held once per surface sound set (gates `Surface.k`); each copy's `MixerChannelSequenceItem` multiplies the same
+channel's gain (property 0, a multiplier: decomp.md "`WaveSequenceItem` update") by up to 3, and a copy applied it
+while its gate was above 0, so also through its set's fade-out. Sliding over several surfaces (sets 8, 1, 3, 9 in the
+trace) stacked the copies: 3^7 ≈ 2187. Fixed (`sfx_player` `control`): a sequence item's channel multiplier applies
+once per (sequence id, item, channel) whatever the number of sets holding the sequence. After, the same trace:
+loudest second −12.3 dBFS, peak 1.6. **Model decision**: how the original's per-set sound objects share one sequence
+is not traced (`FUN_0058fe10`'s two road slots suggest at most two copies live). Not the cause, measured on the way:
+one wheel drives the skids (not four); the skid sequences alone reach −19 dBFS at full intensity; the engine channel
+sits at −6 to −8 dBFS RMS in its tanh limiter at full throttle with a DC offset to +0.13 (open, with the
+sub-harmoniser item; bypassing the sub-harmoniser changes nothing).
+
 ## 2026-11-19: landing sounds on every bump: the landing rule read the loaded contact, not the on-ground byte
 
 A played session's log (`MW_WORLD_SFX_LOG=1`, 2.5 min of free roam): 34 touchdowns and 72 "wheel landing" waves,

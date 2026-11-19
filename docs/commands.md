@@ -344,6 +344,7 @@ sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound 
 back), `MW_LISTENER_DT=current` the old listener-velocity step (A/B of the doppler jitter), `MW_LISTENER_TRACE=<file>`
 logs the listener's velocity per frame; `MW_SFX_TRACE` lines end with each wheel's surface sound set (−1 in the air).
 `mwtool vehicle-sound out.wav --surface <index> [--tyre-class 0..4]` renders the tyre / road sounds of one surface.
+`mwtool vehicle-sound out.wav --trace <MW_SFX_TRACE file>` replays a played run's skid trace through the bank: level before the limiter per second, the voices and automated channel gains at the loudest sample (`MW_MIXER_ITEMS=1` lists the mixer items).
 `MW_AUDIO_METER=1` also prints the player's vehicle bank once a second (`sfx.rs`: level before / after its soft limiter, peak, voices, audio-thread cpu, skid intensities).
 `MW_AUDIO_STALL=<s>|teleport,<ms>[,<n>,<every s>]` holds the audio thread `ms` ms at game time `s` (or at the first >30 mph speed jump) `n` times: a real output underrun, for tests.
 `MW_PAUSE_WORLD_SOUND=0` lets the world's sounds play on while the game clock is paused (the old behaviour; A/B of the pause fix in `settings.rs`).

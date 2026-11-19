@@ -940,6 +940,11 @@ impl Player {
             .collect()
     }
 
+    /// The mixer channels' gains (diagnostics): (channel id, gain now, the channel's own gain).
+    pub fn channel_gains(&self) -> Vec<(u64, f32, f32)> {
+        self.bank.channels.iter().zip(&self.channels).map(|(c, s)| (c.id, s.gain, s.gain_static)).collect()
+    }
+
     fn control(&mut self) {
         let dt = BLOCK as f32 / self.sr;
         self.time += dt;
@@ -986,6 +991,11 @@ impl Player {
 
         let nch = self.channels.len();
         let mut gain_mul = vec![1.0f32; nch];
+        // A sequence that the bank holds once per surface sound set (the same resource behind several gates) is one
+        // sequence to the mixer: its item's channel multiplier applies once, not once per set that is on or fading
+        // out (sliding over a few surfaces multiplied the skid channels' gain by 3 per set: x2000 measured).
+        // MODEL: how the original shares a sequence between the sets' sound objects is not traced.
+        let mut multiplied: std::collections::HashSet<(u64, usize, usize)> = Default::default();
         let mut overrides: Vec<(usize, Target, f32)> = Vec::new();
         let mut starts: Vec<(usize, usize, f32)> = Vec::new();
         for si in 0..self.seqs.len() {
@@ -1049,7 +1059,11 @@ impl Player {
                             for (target, m) in &st.params {
                                 let v = m.m.eval(t_item, self.value(m.bind));
                                 match (target, st.channel) {
-                                    (Target::ChannelGain, Some(c)) => gain_mul[c] *= v.max(0.0),
+                                    (Target::ChannelGain, Some(c)) => {
+                                        if multiplied.insert((seq.id, ii, c)) {
+                                            gain_mul[c] *= v.max(0.0);
+                                        }
+                                    }
                                     (Target::ChannelGain, None) => {}
                                     (t, c) => overrides.push((c.unwrap_or(usize::MAX), *t, v)),
                                 }

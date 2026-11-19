@@ -493,6 +493,10 @@ enum Cmd {
         surface: Option<usize>,
         #[arg(long, default_value_t = 2)]
         tyre_class: u8,
+        /// Replay an `MW_SFX_TRACE` file of a played run (speed, skid intensities, each wheel's surface set)
+        /// through the bank: the level before the limiter per second and the voices at its loudest moment.
+        #[arg(long)]
+        trace: Option<PathBuf>,
     },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
@@ -1723,10 +1727,13 @@ fn main() -> Result<()> {
             let store = AssetStore::new(game)?;
             traffic_sound::run(&store, &component, out.as_deref(), passby)?;
         }
-        Cmd::VehicleSound { out, dry, sweep, mph, surface, tyre_class } => {
+        Cmd::VehicleSound { out, dry, sweep, mph, surface, tyre_class, trace } => {
             use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};
             let store = AssetStore::new(game)?;
             let (mut bank, picks) = store.vehicle_sfx_bank()?;
+            if let Some(trace) = trace {
+                return sfx_trace_replay(bank, picks.fades.clone(), &trace, dry, &out);
+            }
             // Every wheel on one surface: its set's sequences play, the other sets' are left out.
             let set = picks.pick(surface, tyre_class);
             println!("surface {surface:?}, tyre class {tyre_class}: sound set {set:?} of {}", picks.fades.len());
@@ -2014,6 +2021,130 @@ fn music(store: &AssetStore, wave: Option<&str>, out: Option<&Path>) -> Result<(
     for m in &events.game_modes {
         println!("game mode {} ({}): MusicPlaylist {}", m.id, text(m.name), m.music_playlist);
     }
+    Ok(())
+}
+
+/// `vehicle-sound --trace`: an `MW_SFX_TRACE` file (`seconds mph lateral spin braking landing s0 s1 s2 s3`) replayed
+/// through the vehicle bank: the three skid intensities, the speed and the surface sets' fades (`FUN_0058fe10`'s two
+/// road slots, as `sfx.rs`). Prints the level before the limiter per second and the voices at the loudest sample.
+fn sfx_trace_replay(
+    bank: mw_audio::sfx_player::Bank,
+    fades: Vec<(f32, f32)>,
+    trace: &Path,
+    dry: bool,
+    out: &Path,
+) -> Result<()> {
+    use mw_audio::sfx_player::{OUTPUT_RATE, Params, Player};
+    let rows: Vec<Vec<f32>> = std::fs::read_to_string(trace)?
+        .lines()
+        .map(|l| l.split_whitespace().filter_map(|v| v.parse().ok()).collect::<Vec<f32>>())
+        .filter(|r| r.len() >= 10)
+        .collect();
+    let Some(t0) = rows.first().map(|r| r[0]) else { bail!("empty trace") };
+    let params = std::sync::Arc::new(Params::new(bank.param_names()));
+    let names: Vec<String> = params.names().to_vec();
+    let set = |end: &str, v: f32| {
+        for n in names.iter().filter(|n| n.rsplit('.').next() == Some(end)) {
+            params.set(n, v);
+        }
+    };
+    let ids: Vec<(u64, String)> = bank.sequences.iter().map(|s| (s.id, s.binding.clone())).collect();
+    if std::env::var_os("MW_MIXER_ITEMS").is_some() {
+        for (si, q) in bank.sequences.iter().enumerate() {
+            for (ii, it) in q.items.iter().enumerate() {
+                if let mw_audio::sfx_player::ItemKind::Mixer { params } = &it.kind {
+                    println!(
+                        "mixer item: sequence {si} {:016x} {:?} gate {:?} [{ii}] {:.2}..{:.2} channel {:016x?} enabled {:?}: {params:?}",
+                        q.id, q.binding, q.gate, it.start, it.end, it.channel, it.enabled
+                    );
+                }
+            }
+        }
+    }
+    let mut player = Player::new(bank, params.clone());
+    player.dry = dry;
+    set("EngineOn", 1.0);
+    set("GetIsLocalPlayer", 1.0);
+    let rate = OUTPUT_RATE as usize;
+    let mut gains = vec![0.0f32; fades.len()];
+    let mut samples = Vec::new();
+    let (mut row, mut sec, mut sum, mut peak) = (0usize, 0usize, 0.0f64, 0.0f32);
+    // (|sample|, trace time, the voices, the channel gains) at the loudest sample.
+    type Loudest = (f32, f32, Vec<(usize, u64, usize, f32)>, Vec<(u64, f32, f32)>);
+    let mut loudest: Loudest = (0.0, 0.0, Vec::new(), Vec::new());
+    let mut last_t = t0;
+    let end = rows.last().map_or(t0, |r| r[0]);
+    let total = ((end - t0) * rate as f32) as usize;
+    for i in 0..total {
+        let t = t0 + i as f32 / rate as f32;
+        while row + 1 < rows.len() && rows[row + 1][0] <= t {
+            row += 1;
+            let r = &rows[row];
+            let dt = (r[0] - last_t).max(0.0);
+            last_t = r[0];
+            set("GetPlayerSpeed", r[1]);
+            set("GetSpeedMph", r[1]);
+            set("LatSlipIntensityForSkidSound", r[2]);
+            set("SpinIntensityForSkidSound", r[3]);
+            set("SpinBrakingIntensityForSkidSound", r[4]);
+            let mut count = vec![0u32; gains.len()];
+            for k in r[6..10].iter().filter(|&&k| k >= 0.0 && (k as usize) < gains.len()) {
+                count[*k as usize] += 1;
+            }
+            let mut order: Vec<usize> = (0..gains.len()).filter(|&k| count[k] > 0).collect();
+            order.sort_by(|&a, &b| count[b].cmp(&count[a]).then(gains[b].total_cmp(&gains[a])));
+            order.truncate(2);
+            for k in 0..gains.len() {
+                let (fi, fo) = fades[k];
+                gains[k] = if order.contains(&k) {
+                    if fi > 0.0 { (gains[k] + dt / fi).min(1.0) } else { 1.0 }
+                } else if fo > 0.0 {
+                    (gains[k] - dt / fo).max(0.0)
+                } else {
+                    0.0
+                };
+                params.set(&mw_assets::sfx::surface_gate(k), gains[k]);
+            }
+        }
+        let x = player.next_sample_linear();
+        sum += f64::from(x * x);
+        peak = peak.max(x.abs());
+        if x.abs() > loudest.0 {
+            loudest = (x.abs(), t, player.voices(), player.channel_gains());
+        }
+        samples.push((x.tanh() * 32767.0) as i16);
+        if (i + 1) % rate == 0 {
+            let r = &rows[row];
+            println!(
+                "{:>4} s (t {:.1}): linear {:6.1} dBFS peak {:6.2}, {} voices, {:.0} mph, skid {:.2}/{:.2}/{:.2}, sets {:?}",
+                sec,
+                t,
+                10.0 * (sum / rate as f64 + 1e-12).log10(),
+                peak,
+                player.voice_count(),
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                &r[6..10]
+            );
+            sec += 1;
+            sum = 0.0;
+            peak = 0.0;
+        }
+    }
+    println!("loudest sample {:.2} at t {:.2}: {} voices", loudest.0, loudest.1, loudest.2.len());
+    let mut v = loudest.2;
+    v.sort_by(|a, b| b.3.total_cmp(&a.3));
+    for (si, id, item, gain) in v.iter().take(16) {
+        let binding = ids.get(*si).map_or("", |s| s.1.as_str());
+        println!("  sequence {si} {id:016x} {binding:?} item {item}: gain {gain:.3}");
+    }
+    for (id, gain, own) in loudest.3.iter().filter(|c| (c.1 - c.2).abs() > 1e-3) {
+        println!("  channel {id:016x}: gain {gain:.3} (its own {own:.3}, x{:.2})", gain / own.max(1e-9));
+    }
+    let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
+    std::fs::write(out, pcm.to_wav())?;
     Ok(())
 }
 
