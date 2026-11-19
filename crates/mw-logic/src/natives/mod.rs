@@ -45,6 +45,7 @@ pub mod hooks_select;
 mod hooks_tests;
 pub mod hooks_ui;
 pub mod host;
+pub mod layer_set;
 pub mod lua_args;
 pub mod lua_career;
 pub mod lua_feedback;

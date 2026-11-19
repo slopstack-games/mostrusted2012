@@ -165,7 +165,7 @@ fn show_forced_feedback_message(state: &mut LogicState, _: &mut Lua, args: Vec<V
     let id = int(&args, 2);
     let f = &mut state.feedback_queues;
     if !f.queues[HUD].messages.is_empty() {
-        f.queues[HUD].drop_head();
+        f.queues[HUD].drop_head(&mut state.layer_sets.set);
     }
     f.post(HUD, Some(0), id as u32, &text, Vec::new());
     Ok(vec![])

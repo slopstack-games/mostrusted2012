@@ -1357,6 +1357,9 @@ impl Host for RuntimeHost {
             }
             // The count is the logic's (`mode_machine::apply`); `Query::ShowWorldCount` reads it.
             Request::AdjustShowWorldCount { .. } => Some(Carry::Nothing),
+            // The requested layer set is the logic's (`layer_set::apply`; UIM+0x31c08). No layer-set list exists on
+            // PC, so nothing drawn depends on it (docs/decomp.md "UI layer sets").
+            Request::SetLayerSet { .. } => Some(Carry::Nothing),
             Request::SetFullRate(on) => {
                 // Kept for `Query::FullRate`; the runtime renders every frame at the display's rate already.
                 self.full_rate = *on;
@@ -1498,7 +1501,8 @@ impl Host for RuntimeHost {
             Request::ClearHudMessageQueues
             | Request::ClearFeedbackQueues { .. }
             | Request::ClearFeedbackQueue { .. } => {
-                self.logic.state.borrow_mut().feedback_queues.apply(&r).then_some(Carry::Nothing)
+                let st = &mut *self.logic.state.borrow_mut();
+                st.feedback_queues.apply(&r, &mut st.layer_sets.set).then_some(Carry::Nothing)
             }
             // A feedback message's sounds, movie, speech and camera take (`FUN_007b9ee0`, `FUN_007b6040`): the
             // runtime's sound systems are keyed by `MiscSound` fields and car / world codes, not these ids; no

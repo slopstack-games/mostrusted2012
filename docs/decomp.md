@@ -3594,6 +3594,84 @@ tile resolution, not the 600 m / 90° camera); the tiles are added at opacity 0.
   when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start
   must be inside the streamed world (`--units`), else the car falls and is reset. One race per run.
 
+### UI layer sets (2026-11-19, `mw_logic::natives::layer_set`)
+
+Notation: UIM = `*(G+0x2f480)`. All of this is read from the dump (C) unless marked; the PC findings are from the
+install and two memory snapshots (`re/out/live/snap1`, `snap2`).
+
+**State.** +0x31c04 the requested UI group id, +0x31c0c the group being loaded, +0x31c1c / +0x31c1d "from a
+bundle" (requested / loading), +0x31c1e "show the loading icon", +0x31b74 the loader's state, +0x31bf0 / +0x31bf4
+the group's layer-set list (a resource handle and the record's offset; a record is at handle+0x28 + offset),
++0x31bf8 / +0x31bfc the entered set (the "none" handle is `DAT_0117d0d8` / `DAT_0117d0dc` = 0 / 0), +0x31c08 the
+requested set, +0x31c10 an out timer (i64 ticks, 3e6 per second), +0x31c18 a hold counter, +0x31030 a table of up
+to 240 (key, layout-instance id, layer index) triples with its count at +0x31b70, +0x22b70 the layer objects
+(0xf4 bytes each, vtable first; +0xcc its index, +0xd6 its depth, +0xd9 "in the entered set", +0x18 an out
+time), +0xc the mask of allocated layers and +0x2c the mask of layers in the entered set.
+
+**The loader** (`FUN_007a48d0`, the UI manager's update, switches on +0x31b74): 0 `FUN_0079dbf0` waits for a group
+id in +0x31c04 and, when "from a bundle" is set, opens `UI\GROUPS\<id>.BNDL` (state 1); 1 `FUN_0078fde0` asks for
+the list by id (`FUN_00adccd0`(id, 0xd, UIM+0x31bf0)) (2); 2 waits for it (3); 3 `FUN_007a33f0` creates a layer
+for every (key, layout instance) of every set (`FUN_0079e060`, `FUN_007918a0`) and fills the table (4); 4
+`FUN_0079b3b0` waits until every layer is ready (vtable +0x1c) (5); 5 `FUN_007a2400` is the running state; 6
+`FUN_0078fe40` unloads (back to 0). After the switch it steps the allocated layers (vtable +0xc), first those
+outside the entered set, then those in it.
+
+**The list and a set.** List record: +0xc the group id, +0x10 an id counted in a table of the caller (+0x2ded0),
++0x14 / +0x18 the sets (0x18-byte entries, a handle at +0xc / +0x10). Set definition: +0x18 / +0x20 / +0x24 a
+name and two values given to `FUN_0079a130` on enter, +0x30 an id for `FUN_007aa820`, +0x34 the set's id, +0x38
+an input focus id (written to the manager block +0x30370: +0x400, with +5 / +7 cleared), +0x3c / +0x44 context
+entries (0x34 bytes; `FUN_00632a40` + `FUN_006341e0` + `FUN_00634150` per entry on enter, `FUN_00632af0` on leave:
+not traced), +0x40 / +0x46 the layers (0x1c-byte entries: a `UILayoutInstanceParams` handle at +0xc / +0x10, whose
++0x54 is its UniqueId, +0x44 a name and +0x6d a byte given to the layer's constructor, and a key at +0x18), +0x49
+"leave after the out transition".
+
+**The running state** (`FUN_007a2400`), while the list's group is the requested one and the hold counter is below
+1 (else `FUN_0079de00` destroys the layers and leaves the set):
+1. no set requested and the list not empty: the first set's id is requested;
+2. a set is entered and is not the requested one: without +0x49 every layer of it is taken out of the entered mask
+   (`FUN_00791e60`(index, 0)) and the set is left (`FUN_00796680`: the context entries, then the handle = none);
+   with +0x49 the timer is raised to each layer's out time (its +0x18 × 3e6 when that is more than the timer; from
+   the disassembly at 0x7a24e9, the decompiler loses the operands) and the layer is told to go out (vtable +0x20
+   (0, 0));
+3. a running timer counts the frame down (`FUN_0046ee00`'s clock); below 3 ticks the entered set's layers leave the
+   mask and the set is left;
+4. a set is requested and none is entered: every definition with that id is entered (`FUN_007a08d0`: each layer
+   put into the mask, shown (vtable +0x20 (.., 1)), its depth = `FUN_0061e6a0`(5) + its index, its sort key from the
+   depth and the counter `DAT_0117d174`); when none matched the request is cleared; else the set's focus id is
+   handed over.
+
+**Writers of the requested set.** `SET_LAY_SET` (enter 0x7518e0, update 0x751920, exit `FUN_00745c20`); a feedback
+message's +0x8c (field `056664c3`): `FUN_007b9ee0` keeps the old request in the record (+0x36c) and writes its own,
+`FUN_007bab20` writes it again every frame the head's timer counts (not while a pause-with-game message is held,
++0x334), `FUN_007b1c60` and its inlined copies in the queue clears (`FUN_007b2e00`, `FUN_007b31b0`, `FUN_007b2fd0`,
+`FUN_007b3410`, `FUN_007b35c0`) write a non-zero kept value back; the legacy screen loader (`FUN_007e4930` from
+`FUN_007e4c90`: the screen JSON's key `DAT_0117e550` = hash 0x3b034b51; the switch at 0x7e3863 (007E0000.c), case 8, clears the group
+and the set). The group id is written by that loader (key `DAT_0117e56c` = 0x3905d433, not from a bundle) and
+given back by `FUN_0076ece0` / `FUN_0076eb50` (two behaviours that keep +0x31c04 on enter, `FUN_0076f960` /
+`FUN_0076f7f0`, and re-request it from a bundle when they are done).
+
+**On PC nothing reads the request.** The install has no `UI\GROUPS` folder; none of the 399 JSON key names of its
+UI bundles hashes to 0x3905d433, 0x3b034b51 or the loader's other two keys (0xaa227515, 0xde7a8e7c); no GeneSys
+type of the install has the list's or the set's layout; both snapshots read group 0, loader
+state 0, a null list, set 0 and an empty layer table, with 5 layers allocated by other means and none in the
+entered mask. In the data, `SET_LAY_SET` is used by five states of the online log-in error flows (21190, 21201,
+491227, 1938100, 1938103) and all 49 feedback messages have +0x8c = 0. So the layer set is a number that is
+written, kept and given back; no layer is shown or hidden by it, and the port's list stays empty
+(`LayerSets::list`, `LayerSets::update` returns nothing).
+
+**What keeps the song popup and the Easy Drive prompt apart** is data, not the layer set: the free-drive HUD's
+widget `EngineOffHud` (1805613, screen 371621) has the adapters `EZPromptIn` = `Widget.Prompt.IsActive` AND
+`UIMessages.Songs.CurrentMessage.Text(IS_EMPTY)`, `EZMenuIn` = `Widget.EasyDrive.IsActive` AND the same,
+`HideForMusic` = `UIMessages.Songs.CurrentMessage.Text` AND `Widget.HudSelect.ShowMusicChyron`, `ChyronVisible` =
+that text OR `Widget.EngineOffHud.EasyDriveHeading`, which drive the timelines of its layouts (1135036 with
+instance 1805612, 604307 with 1470343). The widget adapters are parsed but not evaluated yet ("Adapters" above),
+so `Widget.EngineOffHud.*` does not resolve and the prompt stays in while a song message is the queue's head.
+
+Model decisions of the port: a layer's out time is asked from the host every frame (the original re-reads the
+layer's +0x18; taken as the time its out transition still needs); the depth base `FUN_0061e6a0`(5) is the host's;
+the context entries (+0x3c), `FUN_0079a130` and `FUN_007aa820` of an enter are not modelled; no parser for the
+list (no such resource in the install to check one against).
+
 ### Widget definitions (JSON) and widget scripts (2026-11-17, `mw_formats::{json, widget}`, `mw_assets::widgets`)
 
 The spec the runtime implements for M8 step 4. Formats: formats.md "Widget definitions (JSON)". C = read in the
