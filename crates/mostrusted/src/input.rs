@@ -322,6 +322,11 @@ impl MenuInput {
         Some((t.state() == 2, t.repeat, t.value))
     }
 
+    /// An action's state by id: 0 idle, 1 held, 2 pressed, 3 released (the timeline controllers' buttons).
+    pub fn state_by_id(&self, id: u8) -> Option<u8> {
+        Some(self.resolved(MenuAction::from_id(id)?).state())
+    }
+
     /// The action's value (analogue: the stick's, keys and buttons 0 / 1).
     pub fn value(&self, a: MenuAction) -> f32 {
         self.resolved(a).value

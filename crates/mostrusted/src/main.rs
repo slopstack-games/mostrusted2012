@@ -84,6 +84,7 @@ mod race;
 mod reflection;
 mod replay;
 mod roadblock;
+mod seq_clock;
 mod sequence_fx;
 mod settings;
 mod sfx;

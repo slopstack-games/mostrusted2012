@@ -45,6 +45,7 @@ pub mod sound;
 pub mod surfaces;
 #[cfg(test)]
 mod test_store;
+pub mod timeline;
 pub mod traffic;
 pub mod traffic_lamps;
 pub mod ui;

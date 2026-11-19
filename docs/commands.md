@@ -293,7 +293,7 @@ MW_CARD_SHOTS=<dir> ./target/release/mostrusted --drive "v12 vantage" --units 20
 #   tools/hl env MW_MUTE=0 ./target/release/mostrusted ...
 MW_MAP_LOG=1 MW_INPUT_SCRIPT="0.5 lx 1; 0.6 lx 0; 1.5 shot <scratch>/m.png; 2 quit" ./target/release/mostrusted --drive "v12 vantage" --units 12 --spawn=1600,40,2350 --show-map
 # Races (race.rs, ai.rs, cutscene.rs): the event's intro, AI opponents on the grid, gates, laps, results
-./target/release/mwtool events [<id> [--png f]] [--all]  # offline events (each opponent's rollout car, colours, Most Wanted / cop flags); mwtool camera-take [take] (ICE cameras)
+./target/release/mwtool events [<id> [--png f]] [--all]  # offline events (each opponent's rollout car, colours, Most Wanted / cop flags); mwtool camera-take [take] (ICE cameras); lists every sequence clock's timeline controllers
 ./target/release/mostrusted --race 462174                # CONTINENTAL DRIFT; --no-cutscenes, --spawn= overrides the start
 ./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race ... (gates, laps, wrong way)
 # MW_RACE_TEST_MISS=<k> skips route entry k (missed_at_skip=); MW_RACE_TEST_AFTER=<s> waits s after the event's end

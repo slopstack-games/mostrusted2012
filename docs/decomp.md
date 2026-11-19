@@ -4611,7 +4611,75 @@ timelines, `mwtool camera-take [take]` evaluates a take. Confirmed unless marked
 - **Not traced**: the item handlers themselves (reached through vtables; only `CameraSequenceItem` is tested by type
   id), so how the teleport sets the car's speed, what the AI drive's `DrivingStyle` does, whether a cut snaps the
   gameplay camera; LAG, BUNGEE, shake and Scene space of takes; the take channels LETTERBOX / FADE / OVERLAY /
-  TIME_SCALE downstream; the outros' nested timeline controllers (jumps waiting for UI triggers).
+  TIME_SCALE downstream. (The timeline controllers: "Timeline controllers" below.)
+
+### Timeline controllers (2026-11-19; ported in `mw_assets::timeline`)
+
+Read from the live disassembly (`re/out/live/text.asm`; most methods are not in the dump) and the loop in the dump.
+Layout (`mwtool genesys-types`): `SequenceTimelineController` = `EnabledBinding` +0x0c, `655d3f5f` +0x14,
+`TriggerType` (`24da9f30`, u16) +0x18, `2d0e4348` (bool) +0x1a; the jumps add `b6a51260` (destination) +0x1c and
+`TriggerTime` (`24ca8230`) +0x20; `JumpOnButtonPress` `Action` (`b998b932`, u16) +0x24 and `1aeaf3ad` +0x26,
+`JumpWaitForButtonPress` `1aeaf3ad` +0x24, `JumpNTimes…` `f2139690` (i32) +0x24. `Sequence` +0x28 `59e12b27` (u16)
+picks the clock, +0x2b `eab1e154` sizes the list. `SequenceItem` base: +0x18 `EndTime`, +0x1c `StartTime` (the
+dump prints fields in offset order; `JumpMonitor…` reads +0x1c as the item's start).
+
+- **Clock** (`FUN_00a44610`): `59e12b27` 0 = a time clock (vtable 0x0102b83c, its time +0x14 = the start time;
+  map `FUN_00a41fb0`: t + tick when t is the time it returned last, else t), 1 = a binding clock (0x0102b81c,
+  `FUN_00a44200`, the sequence's `Binding`), 2 = the first controller is the clock (`RaceCarEntityTimelineController`
+  1349 sequences, `Speech.SpeechTimelineController` 109; not ported). The clock is pushed first into the controller
+  list (`FUN_00a46e80`).
+- **Loop** `FUN_00a42140` (sequence update `FUN_00a45220`, before the item loop `FUN_00a42b90`; skipped once the
+  sequence ended (+0x4a) or while paused (+0x48 > 0)): per controller, condition +0xc then map +0x4 (t, tick
+  context; tick = ctx+0x14 × ctx+0x10 when ctx+0x1c); a result different from the clock's time is handed to the
+  clock (+0x4) and the loop restarts at the first data controller. Time +0x0 and delta +0x4 stored after; delta 0
+  on a jump.
+- **Condition** `FUN_00a434b0` (shared slot +0xc): no binding → true; `TriggerType` 1 → the binding's truth
+  (`FUN_00a4f160`); 0 → the binding's value (`FUN_00a482a0` / `FUN_00a4f200`) differs from the one stored at +0x8
+  (then stored). Data: 990 `TriggerType` 1, 3 `TriggerType` 0 (all `JumpTimelineController`).
+- **Vtables** (8 slots: +0 init, +4 map, +8 release the binding `FUN_00a41f10`, +0xc condition, +0x10 −FLT_MAX,
+  +0x14 bind (`JumpTimeline…`: `FUN_00827570` substitutes `[#]` with the player index), +0x18 attach to the items,
+  +0x1c type id): `JumpTimeline…` 0x0102b85c, `JumpNTimes…` 0x0102b77c, `JumpOnButtonPress` 0x0102b79c,
+  `JumpMonitor…` 0x0102b7bc, `QuitSequence…` 0x0102b7dc, `JumpWaitForButtonPress` 0x00ff10a4. Sentinels: `.data`
+  0x010d10fc / 0x010c473c / 0x010c67e4 = −FLT_MAX ("unset"), 0x010d1100 = +FLT_MAX (the quit's time).
+- **`JumpTimelineController`** (`FUN_00a44320` / `FUN_00a43870`): +0x14 last returned time (unset at init),
+  +0x18 = destination > trigger. Jumps when t == trigger, or continuously (t == last + tick) across it
+  (last ≤ trigger < t). `2d0e4348` set: also anywhere in [trigger, destination) (forward) or
+  [destination, trigger) (backward, a hold at the destination while the binding holds). Last is kept on a jump.
+- **`JumpNTimesTimelineController`** (`FUN_00a442d0` / `FUN_00a437c0`): the same crossing (t == trigger only after
+  a discontinuity) while its count (+0x20) < `f2139690` (10000 in all 8 uses); the count restarts once t > trigger
+  without a jump.
+- **`JumpOnButtonPress`** (`FUN_00827240` / `FUN_00827280`): jumps while t ∈ [trigger, destination) and the input
+  action is pressed: `Action` 0 / 1 / 2 / 3 = AUTOLOG_ACCEPT 52 / SKIP_CUTSCENE 34 / AUTOLOG_ALT 55 / AUTOLOG_START
+  61 (user input record `FUN_0047aa20`(0), state at +0x1c + 12 × action: 0 idle, 1 held, 2 pressed); 34 needs a
+  fresh press (2), the others too with `1aeaf3ad`, else 1 or 2. All 110 uses: `Action` 1. Its +0x1c returns its
+  type id 0x5f6d2: the intro behaviour at 0x0074d040 looks for it to tell whether a skip press at t + tick would
+  jump (sets G480+0x2d260 and `FUN_006a0f30`, the "Pause Intro When Skipping" fade; not ported).
+- **`JumpWaitForButtonPress`** (`FUN_00827710` / `FUN_00827760`): latches an AUTOLOG_ACCEPT press (state 2) at
+  +0x20; reaching the trigger (as the jump) jumps to the destination unless latched; the latch clears once
+  t > trigger or t < destination. `1aeaf3ad` not read.
+- **`JumpMonitorTimelineController`** (`FUN_00826ef0` / `FUN_00827010`; +0x18 `FUN_00826f50` scans the items:
+  the last `ConductorSequenceItem` (type 0x462fb) with start ≤ trigger and end ≥ destination → +0x20; an item of
+  type 0x162f7f → +0x24, not identified): while t (or the last t, continuously) is in [trigger, destination) and in
+  the conductor's range, and the conductor runs its sequence (+0xb0 == 1, +0x40), t becomes conductor start +
+  the conducted sequence's clock (its clock object +0x10) when they differ by more than 1 ms (`.data` 0x010c67ec).
+  So the race outros (1689787 / 1689791 / 1689795, trigger 10–13, window to 15.5) wait for their conducted
+  sequence, which loops while `Widget.AwardMod.IsActive` and skips the award slots `Mode.UpgradesToAward` does
+  not need.
+- **`QuitSequenceTimelineController`** (`FUN_00a441d0` / `FUN_00a439c0`): t ∈ [min, max) of trigger and
+  destination → +FLT_MAX.
+- **Conducted sequences** (`ConductorSequenceItem` vtable 0x00ff1920: start `FUN_0084fd90`, play `FUN_00855860`
+  (`+0x30` 1 → `FUN_00854500`(0), else `FUN_00854450`), update `FUN_00855890` ticks its two sequence instances
+  (+0x18, +0x64) with `FUN_00a45220`): each runs on its own clock, from 0.
+- **Port** (`mw_assets::timeline`): `SequenceClock` runs a sequence's `ClockNode`s (its own and its conducted
+  sequences', `Sequence::clocks`; flattened items name theirs in `Item::clock`); `cutscene.rs` and the logic's
+  playbacks (logic.rs, drawn by `ui_sequence.rs` at the logic's child clocks) run the whole tree; the title, the
+  event card and the feedback plays keep a bare time (`frontend::step` → `timeline::step`, controller state
+  resumed from the time each tick). Model decisions: a conducted sequence starts the tick its conductor's range is
+  entered and moves from the next; 64 restarts at most per tick; bindings resolve through the logic (`--hsm`),
+  else they do not hold. Not ported: the binding clock (1) and the controller clocks (2) for visual sequences, the
+  HUD sequences' controllers (`hud.rs` clock), the skip-fade behaviour. The sound players
+  (`mw_audio::sequence` / `sfx_player`) keep their own reading (to align: their "monitor" is the `2d0e4348` window
+  above, level- not edge-triggered).
 
 ### Port and model decisions (`cutscene.rs`)
 
@@ -4628,7 +4696,7 @@ on its bone every tick with the clip's velocity
 (zero across a cut), the root motion ignored; an opponent teleported onto the player's own start is left where it
 is (462174's `Racer[8]`: the original seats fewer opponents, our opponents' cars are a model); `Racer[n]` = grid
 slot n − 1; after the finish the AI drives the player along a road-graph route from the finish (the race route
-ends there); nested timeline controllers are not run, so the outro plays straight through; audio, post-processing,
+ends there); the timeline controllers (also the conducted sequences') run (`mw_assets::timeline`); audio, post-processing,
 image palettes, UI layouts other than the letterbox, speech and music items are not played; the outro's results
 panels are the HUD's.
 

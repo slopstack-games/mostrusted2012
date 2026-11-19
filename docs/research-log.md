@@ -11,6 +11,40 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: the sequences' timeline controllers ported (`mw_assets::timeline`): jumps, loops, waits, monitors, quits
+
+Sources: live disassembly (`re/out/live/text.asm`) of the six factories (`FUN_00a47730`, `…7580`, `…75e0`, `…7640`,
+`…76a0`, `FUN_00855b40`), their vtables (8 slots; the earlier scratch table's vtables were right, its slot lists ran
+into the next vtable after +0x1c) and methods, the loop `FUN_00a42140` and the clock set-up `FUN_00a44610` in the
+dump. Details: decomp.md "Timeline controllers".
+
+- Every sequence's clock sits first in its controller list; a controller whose result differs from the clock's
+  time hands it to the clock and the loop restarts. Conditions: `TriggerType` 1 = level, 0 = change of value.
+- `2d0e4348` is a window test, not an edge: a monitored jump fires anywhere in [trigger, destination) (forward)
+  or [destination, trigger) (backward). The sound players' inference (`mw_audio::sequence`, "fires whenever the
+  binding turns true later on once past TriggerTime") is close for their forward case but unbounded; not changed
+  here (open).
+- `JumpMonitorTimelineController` is not a jump: in its window the parent follows its conductor's sequence
+  (start + child clock, > 1 ms). The race outros (1689787 / 1689791 / 1689795) hand their timing to the conducted
+  1689289-style sequence, which waits on `Widget.AwardMod.IsActive` and skips award slots by
+  `Mode.UpgradesToAward`.
+- `JumpOnButtonPress.Action` = input action (0 AUTOLOG_ACCEPT, 1 SKIP_CUTSCENE, 2 AUTOLOG_ALT, 3 AUTOLOG_START);
+  `1aeaf3ad` = fresh press only. `JumpWaitForButtonPress` waits for AUTOLOG_ACCEPT. The quit is a window too.
+- `SequenceItem` +0x18 is `EndTime`, +0x1c `StartTime` (formats.md corrected; the parser reads by name).
+- Port: `Sequence::clocks` (`ClockNode` tree, pre-order; flattened items carry `Item::clock`), `SequenceClock`
+  runs it. Runs in `cutscene.rs` (intro skip now through the port; outro's nested clocks; slow motion per item
+  clock), the logic's playbacks (logic.rs; `ui_sequence.rs` draws the conducted sequences at the logic's clocks),
+  and, with the controller state resumed from the time each tick, the title, the event card and feedback plays
+  (`frontend::step`). One log line per jump (`cutscene:` / `hsm:` / `sequence:` … `clock n (conductor id) kind`).
+  `mwtool events <id>` lists every clock's controllers.
+- Model decisions: a conducted sequence starts on the tick its range is entered and moves from the next; 64
+  restarts per tick at most; unresolved bindings do not hold (without `--hsm` the outro's waits fall through).
+- Open: the HUD sequences' controllers (`hud.rs` keeps that clock; the speed camera's wait for the speed wall),
+  the binding / controller clocks (`59e12b27` 1 / 2) of visual sequences, the skip fade behaviour 0x0074d040,
+  item type 0x162f7f (the monitor's second kind), aligning the two sound players, the outro's nested
+  `GeneralTriggerSequenceItem`s (only root items set triggers in logic.rs). Captures that would confirm: a race
+  outro with an award in the original (does it hold until the award widget closes).
+
 ## 2026-11-19: skids and crashes "very loud, distorted, layered, more and more": the skid channels' gain multiplied per surface set
 
 User report with a recording and `MW_AUDIO_METER=1` / `MW_SFX_TRACE` of the played run: the vehicle bank read up to

@@ -39,7 +39,7 @@ use std::sync::mpsc::{Receiver, channel};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use mw_assets::frontend as fe;
-use mw_assets::sequence::{Controller, ItemKind, Sequence};
+use mw_assets::sequence::{ItemKind, Sequence};
 use mw_assets::ui::{DrawOptions, PlacedLayout, Quad, UiAnim, UiBlend, UiScene};
 use mw_bundle::ResourceId;
 use mw_formats::binding::{BindValue, Binding};
@@ -550,20 +550,13 @@ pub(crate) fn pick_tips(cfg: &fe::LoadingConfig, lang: &mw_formats::Language, se
     out
 }
 
-/// Clock with the sequence's jump controllers: crossing a jump's trigger time while its binding holds (empty =
-/// always) jumps to its destination. Returns the new clock and whether it jumped.
+/// Clock with the sequence's timeline controllers (`mw_assets::timeline::step`, for players that keep only the
+/// time; bindings through `holds`, no buttons). Returns the new clock and whether it jumped.
 pub(crate) fn step(seq: &Sequence, clock: f32, dt: f32, holds: &mut dyn FnMut(&str) -> bool) -> (f32, bool) {
-    let next = clock + dt;
-    for c in &seq.controllers {
-        if let Controller::Jump { trigger_time, destination, enabled, .. } = c
-            && clock <= *trigger_time
-            && *trigger_time < next
-            && (enabled.is_empty() || holds(enabled))
-        {
-            return (*destination, true);
-        }
-    }
-    (next, false)
+    let mut env = crate::seq_clock::GameEnv { holds, menu: None, skip: 0 };
+    let (next, jumps) = mw_assets::timeline::step(&seq.controllers, clock, dt, &mut env);
+    crate::seq_clock::log_jumps("sequence", seq, &jumps);
+    (next, !jumps.is_empty())
 }
 
 pub(crate) fn binding_true(b: &str, lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>) -> bool {

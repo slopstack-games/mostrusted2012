@@ -68,6 +68,9 @@ pub struct Shown {
     pub key: String,
     pub seq: Arc<Sequence>,
     pub clock: f32,
+    /// The owner's clocks of the sequence and its conducted sequences (`mw_assets::timeline`; the logic's
+    /// playbacks): the conducted sequences play at theirs. `None`: the player runs them itself.
+    pub clocks: Option<mw_assets::timeline::SequenceClock>,
     /// A feedback message's texts (`feedback.rs`): its layouts' `UISequences.Params[#].Text1..3` (the message
     /// record's three text buffers are the head of the 0x320-byte `StringSequenceItemParam` the sequence reads).
     pub texts: Option<[String; 3]>,
@@ -275,9 +278,18 @@ fn advance(
         p.opacity = w.opacity;
         p.bindings.clone_from(&w.bindings);
         let clock = p.clock;
-        // Conducted children: their own clock (with their jumps) from the item's start while the item runs.
+        // Conducted children: their own clock (with their jumps) from the item's start while the item runs; the
+        // owner's when it runs them.
         for (k, i) in p.seq.items.iter().enumerate() {
             let ItemKind::Conductor(child) = &i.kind else { continue };
+            if let Some(clocks) = &w.clocks {
+                let node = p.seq.clocks.iter().position(|n| n.parent == Some(0) && n.item_id == i.unique_id);
+                match node.and_then(|n| clocks.local(n)) {
+                    Some(t) => p.children.insert(k, t),
+                    None => p.children.remove(&k),
+                };
+                continue;
+            }
             if clock < i.start || clock >= i.end {
                 p.children.remove(&k);
                 continue;

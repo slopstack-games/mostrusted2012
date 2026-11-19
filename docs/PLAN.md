@@ -504,7 +504,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    order, MSVC number formatting; base, string, math, table); all 115 chunks run their main function and
    `Construct` (`mwtool lua`). One state per widget (widget +0x84, decomp.md "Widget definitions (JSON) and widget scripts"). Open: the
    game's GC stepping.
-6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
+6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data). Timeline controllers ported (2026-11-19,
+   `mw_assets::timeline`: all six types, conducted sequences on their own clocks; cutscenes and the logic's
+   playbacks). Open: the HUD sequences' controllers, binding / controller clocks.
 7. `[~]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD
