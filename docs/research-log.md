@@ -44,6 +44,37 @@ Open: `VfxSpotEffectSequenceItem` (6 uses: weapons and feedback groups) parsed b
 sequences' own sounds; captures that would confirm the look: the original's 911 with rear damage past 40 % (from the
 rear: smoke at the engine locators), an LFA with front damage past 80 %.
 
+## 2026-11-19: the sequences' picture items: PostFX states, image palettes, world rendering, time of day, timeline
+
+Ported from the code (decomp.md "Sequence PostFX states and the picture items"; data `mw_assets::sequence_picture`,
+runtime `sequence_picture.rs`, drawn in `tonemap.rs` / `post.wgsl`). The intros / outros (`cutscene.rs`) and the UI
+sequences with their conducted children (`ui_sequence.rs`, `UiSequencePlayer::clocks`) hand their clocks over every
+frame; items start / update / end as the item loop calls slots 3 / 5 / 9.
+- **`PostFXSequenceItem`** → the game logic's request list (+0x2ef70 + 0x50, 3 entries, reference-counted, the newest
+  dropped when full) → the PostFX manager's request slots (`FUN_008e88d0`, `FUN_008eccb0`). Drawn: the vignette
+  (`FUN_008e4b30`, lerped over the default keyframe's), the bloom colour / B.w / level weights (`FUN_008e9610`, over
+  the environment's) and the colour cubes (`FUN_008e4a90` → TintBlend's two state slots; mixed in the final pass as
+  (env + w · state) / (1 + w), the TintBlend's scaling of weights summing above 1). Checked: the intro of 462174 at
+  9 s (state `…162049`, a strong dark-blue vignette for 3–18.73 s at its `Value` 1, no amount curve) and of 1264492 at
+  10 s (`…8e349`: cube `…7899` desaturates, vignette, bloom), each A/B with `MW_NO_SEQUENCE_POSTFX=1`
+  (`scratch/pic/ab.png`, `c_ab.png` in the worktree). Not compared with the original yet: wanted, captures of the
+  original at 462174's intro 9 s and 1264492's at 10 s (`orig`).
+- **Model decisions**: the states' bindings (`582a5d55` enable, `b2bcd17a` transition, `ValueBinding` amount; four
+  sequence states use `Signals.GetValue[0]`) and the mode-2 vector binding (never used: mode is 0 in all items) are
+  not evaluated: amount kept, transition 0, enabled. The base states other than the default are not run (their
+  cooldown / heat / nitrous / wreck / escape bindings), so request slots blend over free roam's values. Items'
+  `EnabledBinding`s are ignored (as `cutscene.rs`). The TintBlend slot that receives the state cubes (+0x12e8…) is
+  read as slots 5 / 6 from the live read (the `FUN_008ce250` copy was not followed). The `Intensity` curve uses
+  `Modulated::at` (the PostFxOverride port's reading of `FUN_00862590`).
+- **Missing renderer features (state ported, logged by `MW_SEQUENCE_PICTURE_LOG=1`)**: the General block (motion
+  blur min / max +0x1504 / +0x1508, flag +0x1410; the final pass's motion-blur variants are not ported; 462174's
+  intro asks max 1), the depth-of-field block (`FUN_008e4f20` not read; our DOF uses the live constants),
+  DisableWorldRendering (`world_rendering` kept; the reader of frame state +0x6af7af not found: the world is still
+  drawn), image palettes (our UI loads its images itself), SceneAnalysis / CameraShake / SetVisionModeType (logged).
+- **SetTimeOfDay / EnvironmentTimeline**: the hour jumps to `da6ac384` and comes back at the end; the timeline is set
+  and follow off until the end. Not traced: the environment manager's receivers of messages 2 / 4 / 8 / 7, the
+  transition when `23198e19` > 0, the meaning of `d6529487` (116.4 in 1016686) and message 7's flag.
+
 ## 2026-11-19: skids and crashes "very loud, distorted, layered, more and more": the skid channels' gain multiplied per surface set
 
 User report with a recording and `MW_AUDIO_METER=1` / `MW_SFX_TRACE` of the played run: the vehicle bank read up to

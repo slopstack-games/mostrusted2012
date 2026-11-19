@@ -349,10 +349,11 @@ fn run_cutscene(
     mut virtual_time: ResMut<Time<Virtual>>,
     mut state: ResMut<CutsceneState>,
     mut race: Option<ResMut<RaceState>>,
-    (mut hud, mut letterbox, mut snap): (
+    (mut hud, mut letterbox, mut snap, mut picture): (
         ResMut<crate::hud::HudSettings>,
         ResMut<LetterboxBars>,
         ResMut<crate::camera::SnapCamera>,
+        ResMut<crate::sequence_picture::SequencePicture>,
     ),
     (keys, pads): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>),
     (ai_race, mut traffic): (Option<Res<crate::ai::RaceSetup>>, Option<ResMut<crate::traffic::TrafficSystem>>),
@@ -398,6 +399,8 @@ fn run_cutscene(
     p.t += real.delta_secs() * p.base_speed;
     let t = p.t;
     let seq = p.seq.clone();
+    // Picture and environment items (PostFX states, time of day, ...): `sequence_picture.rs`.
+    picture.play(if p.which == Which::Intro { "cutscene intro" } else { "cutscene outro" }, &seq, t);
 
     // Slow motion: the simulation's clock (the sequence runs on real time).
     let scale = seq.time_scale(t).max(0.0);

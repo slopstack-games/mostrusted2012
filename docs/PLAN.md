@@ -504,7 +504,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    order, MSVC number formatting; base, string, math, table); all 115 chunks run their main function and
    `Construct` (`mwtool lua`). One state per widget (widget +0x84, decomp.md "Widget definitions (JSON) and widget scripts"). Open: the
    game's GC stepping.
-6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data). 2026-11-19: the cars' damage
+6. `[~]` **Sequences**: the missing `*SequenceItem` types (73 in the data). 2026-11-19: the picture items
+   (`sequence_picture.rs`, decomp.md "Sequence PostFX states"): PostFX states (vignette, bloom, colour cubes drawn;
+   motion blur and depth of field logged), image palettes, world rendering (state only), time of day, timeline. The cars' damage
    sequences (`RaceCarEntityTimelineController` on the zone levels) and their
    `VfxLocatorGroupVehicleSpotEffectSequenceItem`s play (`damage_vfx.rs`); `VfxSpotEffectSequenceItem` parsed, not
    played.

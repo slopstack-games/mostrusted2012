@@ -638,6 +638,9 @@ pub enum ItemKind {
     /// `VfxLocatorGroupVehicleSpotEffectSequenceItem` / `VfxSpotEffectSequenceItem`: an effect at a car's locator
     /// group or at a bound transform (`crate::damage_vfx`).
     VfxSpot(Box<crate::damage_vfx::SpotItem>),
+    /// The picture and environment items (PostFX states, image palettes, world rendering, time of day,
+    /// environment timeline, ...): `crate::sequence_picture`.
+    Picture(crate::sequence_picture::PictureItem),
     /// Audio, post-processing, speech, music and the other item types not ported (type name).
     Other(String),
 }
@@ -734,6 +737,7 @@ impl Sequence {
                 ItemKind::SetSongList { .. } => "SetSongList".into(),
                 ItemKind::MusicState(_) => "MusicState".into(),
                 ItemKind::VfxSpot(_) => "VfxSpot".into(),
+                ItemKind::Picture(p) => p.name().into(),
                 ItemKind::Other(n) => n.clone(),
             };
             match counts.iter_mut().find(|(n, _)| *n == name) {
@@ -1148,7 +1152,8 @@ impl<'a> SequenceContext<'a> {
                 crate::damage_vfx::SpotItem::read(item)
                     .map_or_else(|| ItemKind::Other(short(item).to_string()), |i| ItemKind::VfxSpot(Box::new(i)))
             }
-            other => ItemKind::Other(other.to_string()),
+            other => crate::sequence_picture::PictureItem::parse(other, item)
+                .map_or_else(|| ItemKind::Other(other.to_string()), ItemKind::Picture),
         }
     }
 }

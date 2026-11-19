@@ -40,6 +40,7 @@ mod scene;
 pub mod scoring;
 pub mod sequence;
 pub mod sequence_fx;
+pub mod sequence_picture;
 pub mod sfx;
 mod sfx_loader;
 pub mod sound;

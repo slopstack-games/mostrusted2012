@@ -224,6 +224,24 @@ pub struct Bloom {
 pub struct PostFxKeyframe {
     pub vignette: Vignette,
     pub bloom: Bloom,
+    pub general: General,
+}
+
+/// `PostFxKeyframe.General` (struct at keyframe +0xd0): the words `FUN_008e4d00` blends into the PostFX
+/// manager's +0x1400 block, in that block's order. +0x1404 / +0x140c become the final pass's motion-blur amounts
+/// (+0x1504 / +0x1508, `MotionBlurAmounts`; decomp.md "Final pass").
+#[derive(Debug, Clone, Copy, Default)]
+pub struct General {
+    /// `f75c9bd2` (+0xec), block word 0.
+    pub f75c9bd2: f32,
+    /// `26e9df6b` (+0xe8), block word 1: the motion blur's maximum.
+    pub motion_blur_max: f32,
+    /// `5466cc6c` (+0xe4), block word 2.
+    pub w5466cc6c: f32,
+    /// `a548ceb6` (+0xe0), block word 3: the motion blur's minimum.
+    pub motion_blur_min: f32,
+    /// `fbf07f2f` (+0xf0) == 1: the block's flag byte (+0x1410).
+    pub flag: bool,
 }
 
 impl PostFxKeyframe {
@@ -251,6 +269,15 @@ impl PostFxKeyframe {
                 c9f605e2: float(b, 0xc9f605e2),
                 a3d336c1: float(b, 0xa3d336c1),
                 cf7d9668: float(b, 0xcf7d9668),
+            };
+        }
+        if let Some(g) = sub(o, 0x383a5944) {
+            out.general = General {
+                f75c9bd2: float(g, 0xf75c9bd2),
+                motion_blur_max: float(g, 0x26e9df6b),
+                w5466cc6c: float(g, 0x5466cc6c),
+                motion_blur_min: float(g, 0xa548ceb6),
+                flag: float(g, 0xfbf07f2f) == 1.0,
             };
         }
         out
