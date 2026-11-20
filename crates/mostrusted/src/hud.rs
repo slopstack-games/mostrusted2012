@@ -915,10 +915,11 @@ fn draw_hud(
         Res<crate::gps::Gps>,
         Option<Res<crate::event_starts::EventStarts>>,
     ),
-    (easydrive, roads, pois): (
+    (easydrive, roads, pois, icons_update): (
         Option<Res<crate::easydrive::EasyDrive>>,
         Option<Res<crate::nitrous::Roads>>,
         Res<crate::poi::Pois>,
+        Option<ResMut<crate::logic_profile::MinimapIconsUpdate>>,
     ),
 ) {
     let car = car.single().ok();
@@ -1157,10 +1158,13 @@ fn draw_hud(
         if let Some(r) = race.as_deref().filter(|r| matches!(r.phase, RacePhase::Intro | RacePhase::Racing)) {
             icons.extend(gate_icons(r).into_iter().map(|(i, p, f)| (i, p, f, false)));
         }
+        // The other players' slots: under the logic, shown while "Minimap Icons" (`MINIMAPICONS`, 0x7579b0) updates
+        // them (`UpdateMinimapIcons`, `logic_profile.rs`).
+        let players_shown = icons_update.is_none_or(|mut u| std::mem::take(&mut u.requested));
         icons.extend(
             racer_xf
                 .iter()
-                .filter(|(r, _)| !r.player)
+                .filter(|(r, _)| !r.player && players_shown)
                 .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x), false)),
         );
         // Cops: the same look (`MapPoiConfig.5bfb3553`), whose cop elements show on `IsCop` / `InChase`.

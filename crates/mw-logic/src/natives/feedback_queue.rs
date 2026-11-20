@@ -591,9 +591,23 @@ impl FeedbackQueues {
                     self.queues[q].clear(layer_set);
                 }
             }
+            // `PAUSEMSGS` enter (0x74e890) / exit (0x74ee10): each named queue (`FUN_007b2940`) paused (+0x25 = 1) /
+            // resumed; update (0x74edd0) with `FORCEPAUSE`: paused again. The HUD category counters are the
+            // request's other half (the HUD's, not the queues').
+            Request::PauseMessages { queues, on, .. } => self.set_suspended(queues, *on),
+            Request::ForcePauseMessageQueues { queues } => self.set_suspended(queues, true),
             _ => return false,
         }
         true
+    }
+
+    /// The pause byte +0x25 of each queue named in `names` (the first queue of each name).
+    fn set_suspended(&mut self, names: &[String], on: bool) {
+        for name in names {
+            if let Some(q) = self.find_queue(name) {
+                self.queues[q].suspended = on;
+            }
+        }
     }
 
     /// `PLAYFEEDBACK`'s post (`FUN_007b96b0`(queue, message, *0x10c5c34, 0, 0, 0x10c5c70)): appended to the named

@@ -401,6 +401,15 @@ impl MapScreen {
         self.just_closed = true;
     }
 
+    /// `CLRSELEVENT` (0x73baa0, the logic's `ClearSelectedEvent`): the map's selected item (UIM+0x2c8e4) cleared.
+    /// The local player's item is not an event (the map selects it on opening).
+    pub fn clear_selected_event(&mut self) {
+        if matches!(self.selected, Some(Sel::Item(_))) {
+            self.selected = None;
+            self.options = None;
+        }
+    }
+
     /// The selected event.
     fn selected_item(&self) -> Option<&MapItem> {
         match self.selected_entry()? {

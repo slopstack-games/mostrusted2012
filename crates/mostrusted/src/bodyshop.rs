@@ -146,7 +146,15 @@ fn pass(
     pending: Option<Res<PendingCar>>,
     game_time: Res<Time>,
     mut cars: Query<(&mut Car, &Transform, Option<&mut CarDamage>, Option<&mut CarGrime>), With<Player>>,
+    update: Option<ResMut<crate::logic_profile::BodyShopUpdate>>,
 ) {
+    // Under the logic the pass is the "Do Body Shop" behaviour's update: only on the frames it runs
+    // (`UpdateBodyShop`, `logic_profile.rs`).
+    if let Some(mut u) = update
+        && !std::mem::take(&mut u.requested)
+    {
+        return;
+    }
     let Some(game) = game else { return };
     let shops = &mut *shops;
     if !shops.loaded {

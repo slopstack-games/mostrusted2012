@@ -118,6 +118,9 @@ pub fn set_new_game(s: &mut LogicState, new_game: bool) {
         saved_position: s.progression.last_played(SAVED_POSITION),
     });
     if new_game {
+        // `FUN_0072bf20`: the progression database's tables are emptied (`stat_i` ... `SPBucket`, `last_played`
+        // among them; the runtime's own tables are the request's).
+        s.progression.last_played.clear();
         s.game_modes.new_game = true;
         if let Some(p) = s.players.local_player_mut() {
             p.heat_3d8 = 0.0;
