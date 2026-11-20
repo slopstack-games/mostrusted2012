@@ -76,7 +76,7 @@ pub struct CutscenePlugin {
 
 impl Plugin for CutscenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(crate::cutscene_spawns::SpawnsPlugin);
+        app.add_plugins((crate::cutscene_spawns::SpawnsPlugin, crate::event_timeline::EventTimelinePlugin));
         app.init_resource::<CutsceneState>()
             .init_resource::<LetterboxBars>()
             .add_systems(Startup, spawn_letterbox)
@@ -106,7 +106,7 @@ pub fn run_event_cutscenes(commands: &mut Commands, intro: Option<Arc<Sequence>>
     commands.insert_resource(Setup(Arc::new(CutsceneSetup { intro, outro, auto_skip: false, force_outro: false })));
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Which {
     Intro,
     Outro,

@@ -216,6 +216,7 @@ impl hsm::Host for LogicHost {
             Q::StoryMode => gm.story_mode as u64,
             Q::EndReason => gm.end_reason as u64,
             Q::DisplayTimeoutOn => gm.display_timeout as u64,
+            Q::DisplayTimeLeft => super::game_modes::display_time_left(&st) as u64,
             Q::ModeEndFlag => gm.end_flag_2e75 as u64,
             // `FUN_006f46e0`: GMM+0x2e78, which the end-of-event reset (0x70b37d) sets to 1 for the next event and
             // `SETENDREASON` / `SetGameModeWon` clear (so it reads "the mode is still on"); the offline conditions in

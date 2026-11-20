@@ -33,6 +33,7 @@
 //! | | 0xb0 / 0xf1 | `ce4961e7` / `90f52617` | traffic density base / use it (else the hour-of-day table) |
 //! | | 0xf6 | `Laps` u8 | 1 for sprints, 2–3 for circuits |
 //! | | 0x60 / 0x70 / 0x74 | `AROutro` / `EventIntro` / `EventOutro` | sequence UniqueIds (`mw_assets::sequence`) |
+//! | | 0xa0 | `Timeline` UniqueId[] | sequences the mode timer starts (`FUN_006f0f80`) |
 //! | | 0x78 / 0x80 | `FeedbackMessageGroup` / `IntroMessageGroup` | feedback group bundles (`EN_US/FEEDBACKGROUPS/<id>.BNDL`) |
 //! | `GameMode` | 0x44 | `09d6656d` | crash reset delay, s (decomp.md "Crashes") |
 //! | | 0x0c / 0x10 / 0x24 / 0x34 | `AROutro` / `CountdownSequence` / `Intro` / `ResultsSequence` | sequence UniqueIds |
@@ -58,6 +59,7 @@ mod h {
     pub const DESCRIPTION: u32 = field_hash("Description");
     pub const TYPE_NAME: u32 = field_hash("TypeName");
     pub const CHECKPOINTS: u32 = field_hash("Checkpoints");
+    pub const TIMELINE: u32 = field_hash("Timeline");
     pub const CHECKPOINT_INFO: u32 = field_hash("CheckpointInfo");
     pub const SEQUENCE: u32 = field_hash("Sequence");
     pub const TYPE: u32 = field_hash("Type");
@@ -367,6 +369,9 @@ pub struct Event {
     /// `ab4e53fd` (+0x6c, count +0xde): the event's own `HeatLevel` ids; when the game mode uses them, the player's
     /// heat level comes from this list instead of the free-roam one (`FUN_00669640`).
     pub heat_levels: Vec<u32>,
+    /// `Timeline` (+0xa0, count +0xe6): `Sequence` UniqueIds (in the event's feedback groups) the mode timer starts
+    /// (`FUN_006f0f80`) and the event change / reset stop (`FUN_006e6440`): forced heat levels, cops, PostFX.
+    pub timeline: Vec<u32>,
 }
 
 impl Event {
@@ -681,6 +686,7 @@ impl AssetStore {
                         feedback_message_group: uint(o.get(h::FEEDBACK_MESSAGE_GROUP)),
                         intro_message_group: uint(o.get(h::INTRO_MESSAGE_GROUP)),
                         heat_levels: uints(o.get(0xab4e_53fd)),
+                        timeline: uints(o.get(h::TIMELINE)),
                     });
                 }
                 _ => {}

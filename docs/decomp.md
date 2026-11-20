@@ -4883,6 +4883,29 @@ offline event (GMM+0x2ce0, `FUN_006dfed0` false) whose `OfflineEvent.ab4e53fd` l
 `FUN_0066a7b0` (`HeatLevelInt`): the forced level's +0x116 when its +0x113 (`a53c2545`) is set. `FUN_006675e0` is the
 only writer of +0xa8; a rise of the shown level posts GameLogicConfig's +0xec scoring action (`FUN_006a8050`).
 
+### The event's Timeline sequences (2026-11-20; ported in `mw_logic::natives::game_modes`, played by `event_timeline.rs`)
+
+`FUN_006f0f80`, the mode timer's start (`FUN_006f4650`(GMM, 1), the hook `StartGameModeTimer`): offline
+((GMM+4)+0xe8 clear), unless an event runs (+0x2ce0) whose record has +0xd0 (`7b8cb76d`, 0 in all 62 events) set,
+the event is free drive (+0x2e90) and the player was busted in the last event (+0x2e97), each UniqueId of the event
+record's `Timeline` (+0xa0, count +0xe6) becomes a handle (`FUN_007983b0`) and starts on the general sequence manager
+(`FUN_00a45070`(handle, 0): state 4), its returned id kept at GMM+0x2e50 + 4 × count, count +0x2e60. Outside the game's
+intro (+0x2e91 / +0x2e92) a mode timeout above 0 (GameMode +0x50 `fe4f2d8c`, against `.rdata` 0xf8f344 = 0; 900 s for
+races) sets the deadline +0x2f18 / +0x2f1c = the UI clock (`FUN_0046ee10` +8) + `ftol`(timeout × 3e6, `.rdata`
+0xf9f604). Online: `FUN_006baf80` (not read). Then `FUN_006581c0` (G+0x439b0..+0x439dc reset, a stamp at +0x439b8)
+and +0x2f10 (the display-timeout byte) = 0. The deadline is read by `FUN_006e27e0` (`MODEENDCHECK`'s time left) and
+`FUN_006f46e0` (only while +0x2f10 is set; both writers of +0x2f10, 0x006f6930 and `FUN_0075f4e0`, write their own
+deadline with it). `FUN_006b5300` (the GMM's init) zeroes it.
+
+`FUN_006e6440` stops them: `FUN_00a44d50` on each kept id (state 7), count 0; called by the mode reset `FUN_006f89f0`
+(0x006f8acc) and the event change `FUN_0070b1e0` (0x0070b26d). `FUN_006f1120` (the timer's stop) leaves them.
+
+Data: 30 events have a `Timeline` (one sequence each, one with two), all in their feedback groups and starting at 0 s:
+Gameplay type 1 (the forced heat level, e.g. 1556501 → level 1519273 in 10 races), type 0xe with a
+`SpeechEventSequenceItem` (the ambushes 390185), `SpawnAICopCar` pairs (1433056, the ambushes), and looping PostFX
+(985051 / 985070 / 985083: one item 0–16 s with a `JumpTimelineController` at 16 s → 0). The `SpawnTraffic`
+sequences of 983993's group 1119746 are in no `Timeline` (their starter is not found yet).
+
 ## Traffic and AI vehicles
 
 First pass (session 5); the lane format is in formats.md "TrafficLaneData (0x701)". What is traced so far:

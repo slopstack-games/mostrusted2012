@@ -10,7 +10,8 @@
 //! - `PauseAi` (`PAUSEAI`, G+0x2ef50..0x2ef5f): the racer state (`FUN_0050da90`) returns before driving while the
 //!   car's byte is set (`FUN_006a05d0`): `ai::AiPaused`.
 //! - `GameModeTimer` (`FUN_006f0f80` / `FUN_006f1120`): the race clock starts ([`RaceDriven::timer`]; before: at the
-//!   intro's event trigger). The event's `Timeline` sequences and the 900 s timeout it arms are not run (open).
+//!   intro's event trigger). The event's `Timeline` sequences it starts are `Request::PlayEventTimeline`
+//!   (`event_timeline.rs`); the timeout it arms is the logic's (GMM+0x2f18, `Query::DisplayTimeLeft`).
 //! - `ResetVehicleDamage` / `CleanAndRepairVehicle` (message 0x16 → `FUN_0058f060`): the local car's damage zeroed
 //!   and the car washed (physics message 0x12), as the body shop's repair.
 //! - `ResetProps` (message 0x15 → `FUN_0055a680` case 0x15: `FUN_00559b50`, `FUN_00559e20`, `FUN_005536f0`): every
@@ -140,6 +141,7 @@ pub(super) struct RaceFx<'w, 's> {
     props: Option<ResMut<'w, crate::props::ResetAllProps>>,
     scoring: Option<ResMut<'w, crate::freeroam::ScoringDisabled>>,
     respawn: Option<ResMut<'w, PendingRespawn>>,
+    timeline: Option<ResMut<'w, crate::event_timeline::EventTimeline>>,
     #[allow(clippy::type_complexity)]
     cars: Query<
         'w,
@@ -150,6 +152,11 @@ pub(super) struct RaceFx<'w, 's> {
 }
 
 impl RaceFx<'_, '_> {
+    /// The event's `Timeline` sequences (`event_timeline.rs`).
+    pub(super) fn timeline(&mut self) -> Option<&mut crate::event_timeline::EventTimeline> {
+        self.timeline.as_deref_mut()
+    }
+
     /// Carry one request out.
     pub(super) fn apply(&mut self, c: RaceCarry, driven: Option<&mut RaceDriven>) {
         match c {

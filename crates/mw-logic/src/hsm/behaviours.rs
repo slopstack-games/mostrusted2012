@@ -277,7 +277,7 @@ pub enum Query {
     EndReason,
     /// GMM+0x2f10 ([`GameModeManager::display_timeout`](crate::natives::game_modes::GameModeManager::display_timeout)). Default false.
     DisplayTimeoutOn,
-    /// `MODEENDCHECK` (`FUN_006e27e0`): the ticks left until the display deadline (GMM+0x2f18 as i64 minus the clock `FUN_0046ee10`+8), 0 when it has none or passed; as an i64 in the u64. Not ported: the runtime answers. Default 0 (= timed out).
+    /// `MODEENDCHECK` (`FUN_006e27e0`): the ticks left until the display deadline (GMM+0x2f18 as i64 minus the clock `FUN_0046ee10`+8), 0 when it has none or passed; as an i64 in the u64. The logic host answers ([`crate::natives::game_modes::display_time_left`]). Default 0 (= timed out).
     DisplayTimeLeft,
     /// GMM+0x2e75 (`MODEENDCHECK` online: the end was announced; written by the online code, not ported). Default false.
     ModeEndFlag,

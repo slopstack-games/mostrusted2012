@@ -1,5 +1,6 @@
 //! The intros' and outros' spawn items (`mw_assets::sequence` "spawns"; docs/decomp.md "Sequence spawn items"),
-//! carried out on the playing cutscene's clock (`cutscene.rs` [`CutsceneState::clock`]). The sequence item loop
+//! carried out on the playing cutscene's clock (`cutscene.rs` [`CutsceneState::clock`]) and on the clocks of the
+//! event's `Timeline` sequences (`event_timeline.rs`; each sequence its own items' states). The sequence item loop
 //! (`FUN_00a42b90`) calls an item's prepare method (+8) from its lead time (+4) before the start until it is
 //! ready, its enter method (+0xc) once in range, its update (+0x14) every tick in range and its exit (+0x28 →
 //! stop +0x24) once the clock has left the range; ours does the same per item:
@@ -36,7 +37,7 @@ use std::sync::Arc;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use mw_assets::sequence::{AddRaceCar, ItemKind, RacerRef, SpawnCop, cop_command};
+use mw_assets::sequence::{AddRaceCar, ItemKind, RacerRef, Sequence, SpawnCop, cop_command};
 use mw_bundle::ResourceId;
 use mw_police::coordinator::Role;
 
@@ -79,11 +80,26 @@ struct ItemState {
     stopped: bool,
 }
 
+/// A playing sequence whose items run here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Track {
+    /// The intro / outro (`cutscene.rs`).
+    Cutscene(ResourceId, Which),
+    /// One of the event's `Timeline` sequences (`event_timeline.rs`), by UniqueId.
+    Timeline(u32),
+}
+
+/// The items' states of one playing sequence.
+#[derive(Default)]
+struct TrackState {
+    items: HashMap<usize, ItemState>,
+    traffic_override: bool,
+}
+
 #[derive(Resource, Default)]
 struct Spawns {
-    /// The sequence the states belong to.
-    seq: Option<(ResourceId, Which)>,
-    items: HashMap<usize, ItemState>,
+    /// The playing sequences' item states.
+    tracks: HashMap<Track, TrackState>,
     /// Cars that came back from the loader, by slot.
     arrived: HashMap<usize, (Box<CarSpec>, CarParts)>,
     next_slot: usize,
@@ -95,7 +111,6 @@ struct Spawns {
     entity_poses: Vec<(Entity, Vec3, Quat)>,
     /// The next loader tag (+ [`ENTITY_TAG`]).
     next_tag: u32,
-    traffic_override: bool,
 }
 
 /// The cop's brain role for its command (MODEL, see the module doc).
@@ -110,7 +125,7 @@ fn role_of(command: u8) -> (Role, CopMode) {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn run_spawns(
     mut commands: Commands,
-    cutscene: Res<CutsceneState>,
+    (cutscene, timeline): (Res<CutsceneState>, Option<Res<crate::event_timeline::EventTimeline>>),
     mut spawns: ResMut<Spawns>,
     mut opponents: ResMut<crate::ai::Opponents>,
     requests: Option<Res<LoaderRequests>>,
@@ -139,21 +154,35 @@ fn run_spawns(
             None => true,
         });
     }
-    let clock = cutscene.clock().map(|(w, s, t)| (w, s.clone(), t));
-    let key = clock.as_ref().map(|(w, s, _)| (s.id, *w));
-    if key != spawns.seq {
-        // The sequence ended or changed: every running item stops.
-        stop_all(&mut commands, spawns, traffic.as_deref_mut());
-        spawns.seq = key;
+    // The playing sequences: the cutscene's and the event's `Timeline` ones.
+    let mut sources: Vec<(Track, Arc<Sequence>, f32)> = Vec::new();
+    if let Some((w, s, t)) = cutscene.clock() {
+        sources.push((Track::Cutscene(s.id, w), s.clone(), t));
+    }
+    if let Some(tl) = timeline.as_deref() {
+        sources.extend(tl.clocks().map(|(id, s, t)| (Track::Timeline(id), s.clone(), t)));
+    }
+    // A sequence that ended or changed: every item of it still running stops.
+    let gone: Vec<Track> = spawns.tracks.keys().filter(|k| !sources.iter().any(|(s, ..)| s == *k)).copied().collect();
+    for k in gone {
+        if let Some(track) = spawns.tracks.remove(&k) {
+            stop_track(&mut commands, spawns, track, traffic.as_deref_mut());
+        }
     }
     // Objects that arrive for an item no longer running (the sequence stopped while they loaded) go.
     for (e, tag) in &entities {
-        let live = spawns.items.values().any(|st| !st.stopped && st.slot == Some(tag.0 as usize));
+        let live = spawns
+            .tracks
+            .values()
+            .flat_map(|t| t.items.values())
+            .any(|st| !st.stopped && st.slot == Some(tag.0 as usize));
         if !live {
             commands.entity(e).despawn();
         }
     }
-    let Some((_, seq, t)) = clock else { return };
+    if sources.is_empty() {
+        return;
+    }
     let player_pos = player.single().ok().map(|(_, t)| t.translation);
     let player = player.single().ok().map(|(e, _)| e);
     let racer_entity = |r: RacerRef| -> Option<Entity> {
@@ -167,236 +196,243 @@ fn run_spawns(
         }
     };
     let requests = requests.as_deref();
-    for (index, item) in seq.items.iter().enumerate() {
-        let in_range = t >= item.start && t < item.end;
-        let past = t >= item.end;
-        let local = t - item.start;
-        let state = spawns.items.entry(index).or_default();
-        if state.stopped {
-            continue;
-        }
-        match &item.kind {
-            ItemKind::AddRaceCar(c) => {
-                let Some(clip) = c.clips.iter().find(|k| !k.keys.is_empty()) else { continue };
-                if c.racer != RacerRef::Other {
-                    // MODEL: the bound racer's own car follows the clip.
-                    if in_range {
-                        state.racer = racer_entity(c.racer);
-                    }
-                } else if state.slot.is_none() && !past && t >= item.start - ADD_RACE_CAR_LEAD {
-                    state.slot = spawns_order(&mut spawns.next_slot, requests, c.vehicle);
-                }
-                if in_range
-                    && let (Some(k0), None, None) = (clip.key_at(local), state.entity, state.racer)
-                    && let Some((spec, parts)) = state.slot.and_then(|s| spawns.arrived.remove(&s))
-                {
-                    let car = build(
-                        &mut commands,
-                        "sequence race car",
-                        &spec,
-                        &parts,
-                        Vec3::from(k0.translation),
-                        0.0,
-                        Vec3::ZERO,
-                    );
-                    info!("cutscene: AddRaceCar item {index}: car {} placed at {:.2} s", c.vehicle, t);
-                    state.entity = Some(car);
-                    state.owned = true;
-                }
-                if in_range
-                    && let Some(e) = state.entity.or(state.racer)
-                    && let Some(k0) = clip.key_at(local)
-                {
-                    let k1 = clip.key_at(local + 1.0 / clip.frame_rate.max(1.0)).unwrap_or(k0);
-                    let (a, b) = (Vec3::from(k0.translation), Vec3::from(k1.translation));
-                    let mut velocity = (b - a) * clip.frame_rate.max(1.0);
-                    if velocity.length() > 120.0 {
-                        velocity = Vec3::ZERO;
-                    }
-                    spawns.poses.push((e, a, Quat::from_array(k0.rotation).normalize(), velocity));
-                }
-                if past {
-                    stop_race_car(&mut commands, state, c);
-                }
+    for (key, seq, t) in &sources {
+        let t = *t;
+        let mut track = spawns.tracks.remove(key).unwrap_or_default();
+        for (index, item) in seq.items.iter().enumerate() {
+            let in_range = t >= item.start && t < item.end;
+            let past = t >= item.end;
+            let local = t - item.start;
+            let state = track.items.entry(index).or_default();
+            if state.stopped {
+                continue;
             }
-            ItemKind::SpawnCop(c) => {
-                // MODEL: ordered from the sequence's start.
-                if state.slot.is_none() && !past {
-                    match c.vehicle {
-                        Some(v) => state.slot = spawns_order(&mut spawns.next_slot, requests, v),
-                        None => {
-                            info!("cutscene: SpawnAICopCar item {index}: AI type {} has no vehicle", c.ai_type);
-                            state.stopped = true;
-                            continue;
+            match &item.kind {
+                ItemKind::AddRaceCar(c) => {
+                    let Some(clip) = c.clips.iter().find(|k| !k.keys.is_empty()) else { continue };
+                    if c.racer != RacerRef::Other {
+                        // MODEL: the bound racer's own car follows the clip.
+                        if in_range {
+                            state.racer = racer_entity(c.racer);
                         }
+                    } else if state.slot.is_none() && !past && t >= item.start - ADD_RACE_CAR_LEAD {
+                        state.slot = spawns_order(&mut spawns.next_slot, requests, c.vehicle);
                     }
-                }
-                if (in_range || past)
-                    && state.entity.is_none()
-                    && let Some((spec, parts)) = state.slot.and_then(|s| spawns.arrived.remove(&s))
-                {
-                    let id = COP_ID_BASE + state.slot.unwrap_or_default();
-                    let car = spawn_cop(&mut commands, police.as_deref(), &spatial, player, c, id, &spec, &parts);
-                    let (role, _) = role_of(cop_command(c.command).0);
-                    spawns.roles.push((id as u32, role));
-                    state.entity = Some(car);
-                    state.owned = c.release;
-                }
-                if past && state.entity.is_some() {
-                    // `FUN_00852de0`: released only with the flag (`FUN_006ce180`(slot, 3)) once `FUN_006b8840` allows: the
-                    // spawn's timer (+0x5c8) is −1 (`FUN_006ce030`'s last argument, `.rdata` 0x00f8f340), so at once.
-                    // Without the flag the cop stays, as any AI cop: the coordinator adopts it (`FUN_00521610`, record
-                    // +0x1c / +0x24 set) and removes it off screen beyond the level's distance (`FUN_00522c40`).
-                    if c.release
-                        && let Some(e) = state.entity
+                    if in_range
+                        && let (Some(k0), None, None) = (clip.key_at(local), state.entity, state.racer)
+                        && let Some((spec, parts)) = state.slot.and_then(|s| spawns.arrived.remove(&s))
                     {
-                        commands.entity(e).despawn();
+                        let car = build(
+                            &mut commands,
+                            "sequence race car",
+                            &spec,
+                            &parts,
+                            Vec3::from(k0.translation),
+                            0.0,
+                            Vec3::ZERO,
+                        );
+                        info!("cutscene: AddRaceCar item {index}: car {} placed at {:.2} s", c.vehicle, t);
+                        state.entity = Some(car);
+                        state.owned = true;
                     }
-                    state.stopped = true;
-                }
-            }
-            ItemKind::AnimatedTraffic(a) => {
-                if in_range
-                    && let (Some(k), Some(sys), Some(models)) =
-                        (a.key_at(local), traffic.as_deref_mut(), models.as_deref_mut())
-                {
-                    let pose = Transform::from_translation(Vec3::from(k.translation))
-                        .with_rotation(Quat::from_array(k.rotation).normalize());
-                    match state.entity {
-                        Some(e) => {
-                            commands.entity(e).insert(pose);
+                    if in_range
+                        && let Some(e) = state.entity.or(state.racer)
+                        && let Some(k0) = clip.key_at(local)
+                    {
+                        let k1 = clip.key_at(local + 1.0 / clip.frame_rate.max(1.0)).unwrap_or(k0);
+                        let (a, b) = (Vec3::from(k0.translation), Vec3::from(k1.translation));
+                        let mut velocity = (b - a) * clip.frame_rate.max(1.0);
+                        if velocity.length() > 120.0 {
+                            velocity = Vec3::ZERO;
                         }
-                        None => match sys.vehicle_index(a.vehicle) {
-                            Some(v) => {
-                                state.entity =
-                                    crate::traffic::spawn_scripted(&mut commands, sys, models, requests, v, pose);
-                                state.owned = true;
-                                if state.entity.is_some() {
-                                    info!("cutscene: animated traffic car {} placed at {t:.2} s", a.vehicle);
-                                }
-                            }
+                        spawns.poses.push((e, a, Quat::from_array(k0.rotation).normalize(), velocity));
+                    }
+                    if past {
+                        stop_race_car(&mut commands, state, c);
+                    }
+                }
+                ItemKind::SpawnCop(c) => {
+                    // MODEL: ordered from the sequence's start.
+                    if state.slot.is_none() && !past {
+                        match c.vehicle {
+                            Some(v) => state.slot = spawns_order(&mut spawns.next_slot, requests, v),
                             None => {
-                                info!("cutscene: animated traffic car {}: not a traffic type", a.vehicle);
+                                info!("cutscene: SpawnAICopCar item {index}: AI type {} has no vehicle", c.ai_type);
                                 state.stopped = true;
+                                continue;
                             }
-                        },
+                        }
                     }
-                }
-                if past {
-                    if let Some(e) = state.entity.take() {
-                        commands.entity(e).despawn();
+                    if (in_range || past)
+                        && state.entity.is_none()
+                        && let Some((spec, parts)) = state.slot.and_then(|s| spawns.arrived.remove(&s))
+                    {
+                        let id = COP_ID_BASE + state.slot.unwrap_or_default();
+                        let car = spawn_cop(&mut commands, police.as_deref(), &spatial, player, c, id, &spec, &parts);
+                        let (role, _) = role_of(cop_command(c.command).0);
+                        spawns.roles.push((id as u32, role));
+                        state.entity = Some(car);
+                        state.owned = c.release;
                     }
-                    state.stopped = true;
-                }
-            }
-            ItemKind::OverrideTraffic(list) => {
-                if let Some(sys) = traffic.as_deref_mut() {
-                    if in_range && !state.entered {
-                        let vehicles: Vec<usize> = list.iter().filter_map(|&c| sys.vehicle_index(c)).collect();
-                        info!("cutscene: traffic picks only {list:?} ({} types)", vehicles.len());
-                        sys.set_vehicle_override(Some(vehicles));
-                        spawns.traffic_override = true;
-                        state.entered = true;
-                    }
-                    if past && state.entered {
-                        sys.set_vehicle_override(None);
-                        spawns.traffic_override = false;
+                    if past && state.entity.is_some() {
+                        // `FUN_00852de0`: released only with the flag (`FUN_006ce180`(slot, 3)) once `FUN_006b8840` allows: the
+                        // spawn's timer (+0x5c8) is −1 (`FUN_006ce030`'s last argument, `.rdata` 0x00f8f340), so at once.
+                        // Without the flag the cop stays, as any AI cop: the coordinator adopts it (`FUN_00521610`, record
+                        // +0x1c / +0x24 set) and removes it off screen beyond the level's distance (`FUN_00522c40`).
+                        if c.release
+                            && let Some(e) = state.entity
+                        {
+                            commands.entity(e).despawn();
+                        }
                         state.stopped = true;
                     }
                 }
-            }
-            ItemKind::PlayerDamage(d) if in_range && !state.entered => {
-                state.entered = true;
-                if let Ok(mut dmg) = damage.single_mut() {
-                    dmg.set_levels(&d.posted());
-                    info!("cutscene: player damage set to {:?}", d.posted());
-                }
-            }
-            ItemKind::Gameplay { data, trigger_type } => {
-                if in_range && !state.entered {
-                    state.entered = true;
-                    let ctx = GameplayCtx {
-                        index,
-                        data: *data,
-                        police: police.as_deref_mut(),
-                        logic: logic.as_deref(),
-                        released: &mut released,
-                    };
-                    gameplay_enter(*trigger_type, item.enabled.as_str(), ctx);
-                }
-                if past && state.entered && !state.stopped {
-                    // `FUN_00851b20`: type 6 → `FUN_008433b0`(0); type 7 repeats the respawn once.
-                    if matches!(*trigger_type, 6 | 7) {
-                        info!("cutscene: GameplaySequenceItem {trigger_type} stop: not carried out (see its enter)");
+                ItemKind::AnimatedTraffic(a) => {
+                    if in_range
+                        && let (Some(k), Some(sys), Some(models)) =
+                            (a.key_at(local), traffic.as_deref_mut(), models.as_deref_mut())
+                    {
+                        let pose = Transform::from_translation(Vec3::from(k.translation))
+                            .with_rotation(Quat::from_array(k.rotation).normalize());
+                        match state.entity {
+                            Some(e) => {
+                                commands.entity(e).insert(pose);
+                            }
+                            None => match sys.vehicle_index(a.vehicle) {
+                                Some(v) => {
+                                    state.entity =
+                                        crate::traffic::spawn_scripted(&mut commands, sys, models, requests, v, pose);
+                                    state.owned = true;
+                                    if state.entity.is_some() {
+                                        info!("cutscene: animated traffic car {} placed at {t:.2} s", a.vehicle);
+                                    }
+                                }
+                                None => {
+                                    info!("cutscene: animated traffic car {}: not a traffic type", a.vehicle);
+                                    state.stopped = true;
+                                }
+                            },
+                        }
                     }
-                    state.stopped = true;
+                    if past {
+                        if let Some(e) = state.entity.take() {
+                            commands.entity(e).despawn();
+                        }
+                        state.stopped = true;
+                    }
                 }
-            }
-            ItemKind::DynamicEntity(d) => {
-                // `FUN_008534f0` from the lead time (2 s, `0x0085eec0`): the entity is ordered once.
-                let Some(object) = d.world_component else {
+                ItemKind::OverrideTraffic(list) => {
+                    if let Some(sys) = traffic.as_deref_mut() {
+                        if in_range && !state.entered {
+                            let vehicles: Vec<usize> = list.iter().filter_map(|&c| sys.vehicle_index(c)).collect();
+                            info!("cutscene: traffic picks only {list:?} ({} types)", vehicles.len());
+                            sys.set_vehicle_override(Some(vehicles));
+                            track.traffic_override = true;
+                            state.entered = true;
+                        }
+                        if past && state.entered {
+                            sys.set_vehicle_override(None);
+                            track.traffic_override = false;
+                            state.stopped = true;
+                        }
+                    }
+                }
+                ItemKind::PlayerDamage(d) if in_range && !state.entered => {
+                    state.entered = true;
+                    if let Ok(mut dmg) = damage.single_mut() {
+                        dmg.set_levels(&d.posted());
+                        info!("cutscene: player damage set to {:?}", d.posted());
+                    }
+                }
+                ItemKind::Gameplay { data, trigger_type } => {
                     if in_range && !state.entered {
                         state.entered = true;
-                        info!("cutscene: SpawnDynamicEntitySequenceItem {index}: no world component");
+                        let ctx = GameplayCtx {
+                            index,
+                            data: *data,
+                            police: police.as_deref_mut(),
+                            logic: logic.as_deref(),
+                            released: &mut released,
+                        };
+                        gameplay_enter(*trigger_type, item.enabled.as_str(), ctx);
                     }
-                    continue;
-                };
-                if state.slot.is_none() && !past && t >= item.start - ENTITY_LEAD {
-                    state.slot = order_entity(&mut spawns.next_tag, requests, object, d);
-                }
-                if state.entity.is_none()
-                    && let Some(tag) = state.slot
-                    && let Some((e, _)) = entities.iter().find(|(_, s)| s.0 as usize == tag)
-                {
-                    state.entity = Some(e);
-                    state.owned = true;
-                }
-                if in_range && !state.entered && state.entity.is_some() {
-                    // `FUN_00855520`: the behaviours attach (message 8).
-                    state.entered = true;
-                    info!(
-                        "cutscene: dynamic entity {object} placed at {t:.2} s ({} clip frames{})",
-                        d.keys.len(),
-                        if d.other_behaviours.is_empty() {
-                            String::new()
-                        } else {
-                            format!("; not carried out: {:?}", d.other_behaviours)
+                    if past && state.entered && !state.stopped {
+                        // `FUN_00851b20`: type 6 → `FUN_008433b0`(0); type 7 repeats the respawn once.
+                        if matches!(*trigger_type, 6 | 7) {
+                            info!(
+                                "cutscene: GameplaySequenceItem {trigger_type} stop: not carried out (see its enter)"
+                            );
                         }
-                    );
-                }
-                if in_range
-                    && state.entered
-                    && let Some(e) = state.entity
-                {
-                    let pose = match d.key_at(local) {
-                        Some(k) => (Vec3::from(k.translation), Quat::from_array(k.rotation).normalize()),
-                        None => (Vec3::from(d.position), Quat::from_array(d.rotation).normalize()),
-                    };
-                    spawns.entity_poses.push((e, pose.0, pose.1));
-                }
-                if past {
-                    // `FUN_008503e0`: message 3, the entity goes.
-                    if let Some(e) = state.entity.take() {
-                        commands.entity(e).despawn();
+                        state.stopped = true;
                     }
-                    state.stopped = true;
                 }
+                ItemKind::DynamicEntity(d) => {
+                    // `FUN_008534f0` from the lead time (2 s, `0x0085eec0`): the entity is ordered once.
+                    let Some(object) = d.world_component else {
+                        if in_range && !state.entered {
+                            state.entered = true;
+                            info!("cutscene: SpawnDynamicEntitySequenceItem {index}: no world component");
+                        }
+                        continue;
+                    };
+                    if state.slot.is_none() && !past && t >= item.start - ENTITY_LEAD {
+                        state.slot = order_entity(&mut spawns.next_tag, requests, object, d);
+                    }
+                    if state.entity.is_none()
+                        && let Some(tag) = state.slot
+                        && let Some((e, _)) = entities.iter().find(|(_, s)| s.0 as usize == tag)
+                    {
+                        state.entity = Some(e);
+                        state.owned = true;
+                    }
+                    if in_range && !state.entered && state.entity.is_some() {
+                        // `FUN_00855520`: the behaviours attach (message 8).
+                        state.entered = true;
+                        info!(
+                            "cutscene: dynamic entity {object} placed at {t:.2} s ({} clip frames{})",
+                            d.keys.len(),
+                            if d.other_behaviours.is_empty() {
+                                String::new()
+                            } else {
+                                format!("; not carried out: {:?}", d.other_behaviours)
+                            }
+                        );
+                    }
+                    if in_range
+                        && state.entered
+                        && let Some(e) = state.entity
+                    {
+                        let pose = match d.key_at(local) {
+                            Some(k) => (Vec3::from(k.translation), Quat::from_array(k.rotation).normalize()),
+                            None => (Vec3::from(d.position), Quat::from_array(d.rotation).normalize()),
+                        };
+                        spawns.entity_poses.push((e, pose.0, pose.1));
+                    }
+                    if past {
+                        // `FUN_008503e0`: message 3, the entity goes.
+                        if let Some(e) = state.entity.take() {
+                            commands.entity(e).despawn();
+                        }
+                        state.stopped = true;
+                    }
+                }
+                ItemKind::SpawnTraffic(s) if in_range && !state.entered => {
+                    // `FUN_00853660`: the first trigger's point (every item in the data uses one trigger; the other
+                    // branches, the first `Position` entry or `PositionBinding`, are unused) → traffic message 0x15.
+                    state.entered = true;
+                    let placed = match (s.points.first(), traffic.as_deref_mut()) {
+                        (Some((p, _)), Some(sys)) => match sys.vehicle_index(s.vehicle) {
+                            Some(v) => sys.spawn_sequence_car(Vec3::from(*p), v, s.payload, player_pos, &mut commands),
+                            None => false,
+                        },
+                        _ => false,
+                    };
+                    info!("cutscene: SpawnTraffic {} at trigger {:?}: placed {placed}", s.vehicle, s.triggers.first());
+                }
+                _ => {}
             }
-            ItemKind::SpawnTraffic(s) if in_range && !state.entered => {
-                // `FUN_00853660`: the first trigger's point (every item in the data uses one trigger; the other
-                // branches, the first `Position` entry or `PositionBinding`, are unused) → traffic message 0x15.
-                state.entered = true;
-                let placed = match (s.points.first(), traffic.as_deref_mut()) {
-                    (Some((p, _)), Some(sys)) => match sys.vehicle_index(s.vehicle) {
-                        Some(v) => sys.spawn_sequence_car(Vec3::from(*p), v, s.payload, player_pos, &mut commands),
-                        None => false,
-                    },
-                    _ => false,
-                };
-                info!("cutscene: SpawnTraffic {} at trigger {:?}: placed {placed}", s.vehicle, s.triggers.first());
-            }
-            _ => {}
         }
+        spawns.tracks.insert(*key, track);
     }
     // `GameplaySequenceItem` 0xc: the AI cars of the listed types go (`FUN_006ce180`(slot, 4)) where the car exists
     // (`FUN_006ba2a0`) and may be released (`FUN_006b8840`: every AI spawn sets the timer +0x5c8 to −1, so only the
@@ -405,15 +441,18 @@ fn run_spawns(
     // cops carry their `AIPlayerType` here, so a type other than 0 (all) matches only those (the data only uses 0).
     for ty in released {
         let mut n = 0;
-        for (index, item) in seq.items.iter().enumerate() {
-            if let ItemKind::SpawnCop(c) = &item.kind
-                && (ty == 0 || c.ai_type == ty)
-                && let Some(state) = spawns.items.get_mut(&index)
-                && let Some(e) = state.entity.take()
-            {
-                commands.entity(e).despawn();
-                state.stopped = true;
-                n += 1;
+        for (key, seq, _) in &sources {
+            let Some(track) = spawns.tracks.get_mut(key) else { continue };
+            for (index, item) in seq.items.iter().enumerate() {
+                if let ItemKind::SpawnCop(c) = &item.kind
+                    && (ty == 0 || c.ai_type == ty)
+                    && let Some(state) = track.items.get_mut(&index)
+                    && let Some(e) = state.entity.take()
+                {
+                    commands.entity(e).despawn();
+                    state.stopped = true;
+                    n += 1;
+                }
             }
         }
         if ty == 0 {
@@ -613,10 +652,18 @@ fn stop_race_car(commands: &mut Commands, state: &mut ItemState, _c: &AddRaceCar
     state.stopped = true;
 }
 
-/// The sequence stopped: every item still running stops (owned cars go; kept cops stay), the traffic override
-/// ends.
-fn stop_all(commands: &mut Commands, spawns: &mut Spawns, traffic: Option<&mut crate::traffic::TrafficSystem>) {
-    for (_, state) in spawns.items.drain() {
+/// A sequence stopped: every item of it still running stops (owned cars go; kept cops stay), its traffic override
+/// ends, its cars still loading are dropped.
+fn stop_track(
+    commands: &mut Commands,
+    spawns: &mut Spawns,
+    track: TrackState,
+    traffic: Option<&mut crate::traffic::TrafficSystem>,
+) {
+    for (_, state) in track.items {
+        if let Some(slot) = state.slot {
+            spawns.arrived.remove(&slot);
+        }
         if !state.stopped
             && state.owned
             && let Some(e) = state.entity
@@ -624,13 +671,11 @@ fn stop_all(commands: &mut Commands, spawns: &mut Spawns, traffic: Option<&mut c
             commands.entity(e).despawn();
         }
     }
-    if spawns.traffic_override
+    if track.traffic_override
         && let Some(sys) = traffic
     {
         sys.set_vehicle_override(None);
     }
-    spawns.traffic_override = false;
-    spawns.arrived.clear();
     spawns.poses.clear();
     spawns.entity_poses.clear();
 }
