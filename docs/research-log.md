@@ -32,6 +32,24 @@ Open: the speech items (`SpeechEventSequenceItem`, not parsed); the ambush mode 
 its Timeline (heat 0xe, cops) is not reached; who starts the `SpawnTraffic` sequences of 1119746 (not a Timeline);
 police in `--race` runs (the stand-in `WasBusted` false).
 
+## 2026-11-20: the event's gameplay triggers (`gameplay_triggers.rs`, decomp.md "Gameplay triggers")
+
+The starter of 983993's `SpawnTraffic` sequences is a `GameplayTrigger` (1119741..3: `Input.Trigger` a world box,
+`Output.Sequence` the sequence); every event names its triggers in `a9d6149c`. Ported: the manager G+0x2f408
+(`FUN_006f58b0` activation, `FUN_006f5d50` queue, `FUN_006fbfb0` update, `FUN_006f21b0` re-arms, `FUN_006f9670`
+fire) in `mw_logic::natives::gameplay_triggers`; data `mw_assets::gameplay_triggers`; the runtime feeds the car box
+and the playing sequences, plays sequence outputs through `event_timeline.rs` (now also trigger sequences, which end
+on their own) and speech through `SpeechCore::request_first`.
+
+Checked: `--race 983993`: 14/14, 141.34 s; along the route the triggers force heat level 1556521, place the two
+chasing cop pairs (1909216 at 120 mph, 1909203 at 90 / 80 mph) and the scripted traffic car (906338 at trigger
+1119740). 462174 27/27 218.12 s, 906146 10/10 135.84 s (its two triggers not reached), pursuit passes.
+
+Open: AI-player outputs (`FUN_006ce030` through `FUN_006e8ae0`) and roadblock outputs (`FUN_0083f030`) are logged;
+the reset sweep (32 m); trigger kind 0x19 inputs; sphere input triggers (none among the 308 inputs);
+`GameplaySequenceItem` type 8 and the scoring actions' triggers do not queue through the manager yet; the
+sequence players of `SequenceType` all run on the game clock.
+
 ## 2026-11-20: speech sequence items and the items' `EnabledBinding` (`cutscene_spawns.rs`)
 
 - **`SpeechEventSequenceItem`**: registered at 0x008560f3 (type id from 0x00830df0 = 0x84a38), factory 0x00860b20,

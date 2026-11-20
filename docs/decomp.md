@@ -4906,6 +4906,35 @@ Gameplay type 1 (the forced heat level, e.g. 1556501 → level 1519273 in 10 rac
 (985051 / 985070 / 985083: one item 0–16 s with a `JumpTimelineController` at 16 s → 0). The `SpawnTraffic`
 sequences of 983993's group 1119746 are in no `Timeline` (their starter is not found yet).
 
+### Gameplay triggers (2026-11-20; ported in `mw_logic::natives::gameplay_triggers`, run by `gameplay_triggers.rs`)
+
+The manager at G+0x2f408 (`FUN_006fbfb0` every frame from the game update `FUN_006abc10`). Data:
+`mw_assets::gameplay_triggers` (layout table there; 395 `GameplayTrigger`s in list 457533 of `GAMEPLAY.BNDL`).
+- **Activation** `FUN_006f58b0` (0x0070ccc0 in `FUN_0070caa0`, the event's set-up after its start): the current
+  event record's `a9d6149c` (+0x7c, count byte +0xf5) names its triggers (38 events have some); each found in the
+  list (`FUN_006e8c20`) joins the active list +0x44 (8 B each, count +0x244) and its inputs' world triggers are
+  enabled (`FUN_006f2410`). `FUN_006f5c10` (in `FUN_0070b1e0`) removes them all, posting a world message (type 1)
+  per input. Fired list +0x248 (0x18 B: the trigger, the first output's sequence handle +0x10, a timer +0x8, the
+  player kind +0x14; count +0x848); queue +0x850 (0x50 B, count +0xfd0); emptied with the event (0x006e2dbc).
+- **Update** `FUN_006fbfb0`: only with an event (GMM+0x2ce0), the local player's vehicle (`FUN_006ba2a0`) and the
+  mode timer (+0x2e74). `FUN_006f21b0` re-arms first: +0x24 = 1 forgets a fired trigger once its sequence handle no
+  longer plays (`FUN_00a42390` / `FUN_00a422d0` on its player), 2 once its timer (stamp +0x18 × 3e6 ticks,
+  `FUN_00ac6da0`) has run out, others stay fired. The car's hit list (`FUN_005372f0`, up to 16 world triggers →
+  their ids) queues (`FUN_006f5d50`) every active, unfired trigger with a matching `Input.Trigger`; after a reset
+  (the vehicle's flag G+0x25694) the triggers within 32 m of where it began are hit too (`FUN_004b3b10`). Then each
+  queued trigger: unknown or fired → dropped; while the player is crashed (+0x23f, `FUN_006ba290`) one with +0x2c
+  stays queued and one without +0x2b is dropped; its `Predicate` (`FUN_0063e470`) holding → fired; dropped. Last,
+  the AI spawn queue `FUN_006e8ae0` (retries `FUN_006ce030`, counting a delay down).
+- **Queue** `FUN_006f5d50`(trigger, vector, params): nothing while crashed unless +0x2b / +0x2c; one entry per
+  trigger. Also called by `GameplaySequenceItem` type 8 and the scoring actions.
+- **Fire** `FUN_006f9670`: inputs of trigger kind 0x19 send message 3 (`FUN_0069fd30`, `FUN_00716130`); per output
+  whose `Predicate` holds: its AI players (+0x18, count +0x24) queued at their trigger points (0x40 B records at
+  +0xfe0, at most 12, count +0x12e0), its roadblocks (count byte +0x28: `FUN_008456d0` clears, `FUN_0083f030` per
+  instance), the first `SequenceOutput` (+0x1c, count +0x26) on the player `SequenceType` names (0 / 2 UIM+0x12568,
+  3 / 4 a free feedback player `FUN_007b2620`, 5 / 7 UIM+0x126dc, 6 the sim-timer player UIM+0x47748, else
+  UIM+0x1245c; `a011d5ae` hands the queued parameters), then its speech list (+0x14, count byte +0x29,
+  `FUN_006e0a90`). The trigger joins the fired list with the first played sequence.
+
 ## Traffic and AI vehicles
 
 First pass (session 5); the lane format is in formats.md "TrafficLaneData (0x701)". What is traced so far:

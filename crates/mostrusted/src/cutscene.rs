@@ -76,7 +76,11 @@ pub struct CutscenePlugin {
 
 impl Plugin for CutscenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((crate::cutscene_spawns::SpawnsPlugin, crate::event_timeline::EventTimelinePlugin));
+        app.add_plugins((
+            crate::cutscene_spawns::SpawnsPlugin,
+            crate::event_timeline::EventTimelinePlugin,
+            crate::gameplay_triggers::GameplayTriggersPlugin,
+        ));
         app.init_resource::<CutsceneState>()
             .init_resource::<LetterboxBars>()
             .add_systems(Startup, spawn_letterbox)

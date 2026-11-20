@@ -35,6 +35,9 @@ pub struct EventInfo {
     /// The event record's `Timeline` (+0xa0, count +0xe6): `Sequence` UniqueIds the mode timer starts
     /// ([`start_timer`]; filled by the runtime).
     pub timeline: Vec<u32>,
+    /// The event record's `a9d6149c` (+0x7c, count +0xf5): its `GameplayTrigger`s ([`super::gameplay_triggers`];
+    /// filled by the runtime).
+    pub gameplay_triggers: Vec<u32>,
 }
 
 /// Fields of the GMM the hooks touch.

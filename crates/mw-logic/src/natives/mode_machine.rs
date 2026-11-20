@@ -111,9 +111,19 @@ pub fn update(state: &RefCell<LogicState>, hsm: &mut Hsm, host: &mut dyn Host) {
 /// the event record's +0x8c set, that event is requested with flag 1 (`FUN_006e74f0`); else, in story mode, for an
 /// event that is not free drive (+0x2e90) and not the game intro (+0x2e91), the free-drive event
 /// (`FUN_0068fa10`, [`pick_freedrive_event`]) is requested with flag 1 (the way back to free roam, the next mode
-/// then starts with +0x2e7f set); else the request is cleared (+0x2ce4 = 0, +0x2e7e = 0). Not ported: the rest of
+/// then starts with +0x2e7f set); else the request is cleared (+0x2ce4 = 0, +0x2e7e = 0). Before that, the event's
+/// gameplay triggers become active (0x0070ccc0, `FUN_006f58b0`). Not ported: the rest of
 /// the function (rollout, weapon, timer and camera set-up for the event, online branch).
 pub fn after_start(s: &mut LogicState) {
+    // 0x0070ccc0 `FUN_006f58b0`: the event's gameplay triggers become active.
+    let triggers = s
+        .game_modes
+        .events
+        .iter()
+        .find(|e| e.id == s.game_modes.current_event)
+        .map(|e| e.gameplay_triggers.clone())
+        .unwrap_or_default();
+    super::gameplay_triggers::activate(s, &triggers);
     let next = s.game_modes.events.iter().find(|e| e.id == s.game_modes.current_event).map_or(0, |e| e.next_event);
     let gm = &s.game_modes;
     if next != 0 {
@@ -162,6 +172,8 @@ pub fn end_of_event(s: &mut LogicState) {
     let was_race = s.game_modes.race_event;
     // 0x0070b26d `FUN_006e6440`: the event's `Timeline` sequences stop.
     super::game_modes::stop_timeline(s);
+    // `FUN_006f5c10`: the event's gameplay triggers are no longer active.
+    super::gameplay_triggers::activate(s, &[]);
     s.game_modes.machine = None;
     s.game_modes.won = true;
     s.game_modes.timer_running = false;

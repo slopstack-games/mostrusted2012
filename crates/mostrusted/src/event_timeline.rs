@@ -28,15 +28,24 @@ impl Plugin for EventTimelinePlugin {
     fn build(&self, app: &mut App) {
         // After the logic's frame (its requests carried out), before `sequence_picture.rs` (PostUpdate) and the
         // spawn items (`cutscene_spawns.rs`).
-        app.init_resource::<EventTimeline>().add_systems(Update, step.after(crate::logic::LogicTick));
+        app.init_resource::<EventTimeline>()
+            .add_systems(Update, step.in_set(EventTimelineStep).after(crate::logic::LogicTick));
     }
 }
 
+/// The sequences' clocks step (after the logic and the gameplay triggers started theirs).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventTimelineStep;
+
 type Job = Arc<Mutex<Option<Result<Sequence, String>>>>;
 
-/// One `Timeline` sequence the logic started.
+/// One sequence the logic started: a `Timeline` one, or a gameplay trigger's output.
 struct Run {
     sequence: u32,
+    /// The gameplay trigger that started it (`gameplay_triggers.rs`); `None`: the event's `Timeline`.
+    trigger: Option<u32>,
+    /// A trigger's sequence ended a frame ago (its items have seen the end): it goes.
+    gone: bool,
     job: Option<Job>,
     seq: Option<Arc<Sequence>>,
     clocks: Option<SequenceClock>,
@@ -44,7 +53,8 @@ struct Run {
     finished: bool,
 }
 
-/// The event's `Timeline` sequences that play (the GMM's handles +0x2e50).
+/// The event's `Timeline` sequences that play (the GMM's handles +0x2e50) and the gameplay triggers' sequences
+/// (`gameplay_triggers.rs`, `FUN_006f9670`; they end on their own).
 #[derive(Resource, Default)]
 pub struct EventTimeline {
     runs: Vec<Run>,
@@ -54,6 +64,21 @@ impl EventTimeline {
     /// `PlayEventTimeline`: `FUN_00a45070`, the sequence starts from 0 (read from the event's feedback groups
     /// `groups` when the store's index does not hold it).
     pub fn play(&mut self, store: &Arc<mw_assets::AssetStore>, sequence: u32, groups: Vec<u32>) {
+        self.start(store, sequence, groups, None);
+    }
+
+    /// A gameplay trigger's `SequenceOutput` (`FUN_006f9670` → `FUN_00a45070` / `FUN_00a44f30` on the player its
+    /// `SequenceType` names). MODEL: every player kind runs on the game clock here.
+    pub fn play_trigger(&mut self, store: &Arc<mw_assets::AssetStore>, trigger: u32, sequence: u32, groups: Vec<u32>) {
+        self.start(store, sequence, groups, Some(trigger));
+    }
+
+    /// A sequence still plays (loading counts): the re-arm of a mode-1 trigger (`FUN_006f21b0`, `FUN_00a42390`).
+    pub fn playing(&self, sequence: u32) -> bool {
+        self.runs.iter().any(|r| r.sequence == sequence && !r.finished)
+    }
+
+    fn start(&mut self, store: &Arc<mw_assets::AssetStore>, sequence: u32, groups: Vec<u32>, trigger: Option<u32>) {
         let job: Job = Arc::new(Mutex::new(None));
         let (out, store) = (job.clone(), store.clone());
         let _ = crate::platform::thread::Builder::new().name("mw-event-timeline".into()).spawn(move || {
@@ -64,8 +89,17 @@ impl EventTimeline {
                 .map_err(|e| e.to_string());
             *out.lock().unwrap() = Some(got);
         });
-        self.runs.push(Run { sequence, job: Some(job), seq: None, clocks: None, clock: 0.0, finished: false });
-        info!("event timeline: sequence {sequence} started");
+        self.runs.push(Run {
+            sequence,
+            trigger,
+            gone: false,
+            job: Some(job),
+            seq: None,
+            clocks: None,
+            clock: 0.0,
+            finished: false,
+        });
+        info!("event timeline: sequence {sequence} started (trigger {trigger:?})");
     }
 
     /// `StopEventTimeline`: `FUN_00a44d50`, the sequence's state 7 (its items end).
@@ -92,6 +126,12 @@ fn step(
     // The general sequence manager runs on the game clock (it stops with the pause).
     let dt = if virt.is_paused() { 0.0 } else { virt.delta_secs() };
     timeline.runs.retain_mut(|r| {
+        if r.trigger.is_some() && r.finished {
+            if r.gone {
+                return false;
+            }
+            r.gone = true;
+        }
         if let Some(job) = &r.job {
             let Some(got) = job.lock().unwrap().take() else { return true };
             r.job = None;

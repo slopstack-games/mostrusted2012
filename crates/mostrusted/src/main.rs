@@ -45,6 +45,7 @@ mod frame_log;
 mod freeroam;
 mod frontend;
 mod game_text;
+mod gameplay_triggers;
 mod garage;
 mod gate_marker;
 mod gps;
