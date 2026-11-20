@@ -44,6 +44,7 @@ mod h {
     pub const HEAT_TIME: u32 = 0x2d16_3b85; // +0x100
     pub const THRESHOLD: u32 = field_hash("Threshold"); // +0x10e
     pub const COOLDOWN_ALLOWED: u32 = 0x249e_d427; // +0x110
+    pub const FORCED_NUMBER: u32 = 0xa53c_2545; // +0x113
     pub const LEVEL: u32 = 0xb226_6b6e; // +0x116
     pub const REMOVE_CHASE: u32 = 0xb315_1902; // +0x7c
     pub const SPAWN_CHASE: u32 = 0xb408_d33d; // +0x80
@@ -148,6 +149,9 @@ pub struct HeatLevel {
     pub lose_radius: f32,
     /// `249ed427` (+0x110): the level has a cooldown (`FUN_00656140`).
     pub cooldown_allowed: bool,
+    /// `a53c2545` (+0x113): when a sequence forced this level (`GameplaySequenceItem` type 1, G+0x2f414 +0xa8),
+    /// `Player.HeatLevelInt` shows its number (`FUN_0066a7b0`); without it the number stays the heat's.
+    pub forced_number: bool,
     /// `a504e53b` (+0x6c): the scoring action posted when the level is first reached (`FUN_0065c5e0`).
     pub level_up_action: u32,
     /// `Helicopter` (+0x74): 0 on every level in the install.
@@ -236,8 +240,19 @@ pub struct PoliceConfig {
     pub levels: Vec<HeatLevel>,
     /// Every `HeatLevel` by id (an event's own list, `OfflineEvent.ab4e53fd`, names rows from here).
     pub levels_by_id: HashMap<u32, HeatLevel>,
+    /// The running offline event's own heat levels (`OfflineEvent.ab4e53fd` through `levels_by_id`; GMM+0x2ce0's
+    /// event data, `FUN_006e66a0`): when not empty the heat's level is looked up here first (`FUN_00669640`,
+    /// `FUN_00669860`). Set by the runtime while an event runs; empty in free roam.
+    pub event_levels: Vec<HeatLevel>,
+    /// The level a sequence forced (G+0x2f414 +0xa8: `GameplaySequenceItem` type 1, `FUN_006675e0`): it stands for
+    /// the heat's level wherever the level row is read (`FUN_0066aa30`, `FUN_00669860`) until a later item sets
+    /// another (an id with no row clears it). Never cleared otherwise (the setter has no other caller).
+    pub forced_level: Option<HeatLevel>,
     /// `Gameplay.CopType` id → `VehicleList` id of the car (`AIPlayerType.Rollout` → `Rollout.Vehicle`).
     pub cop_vehicles: HashMap<u32, u32>,
+    /// `AIPlayerType` id → the first `Gameplay.CopType` (data order) whose `AIPlayerType` it is: the cop type of an AI
+    /// cop spawned by its AI type (`SpawnAICopCar`).
+    pub cop_type_of_ai: HashMap<u32, u32>,
     /// `Gameplay.CopType` id → the speed a cop of that type is spawned with (mph; `AIPlayerType.SpawnSpeed`,
     /// +0x6c, `FUN_005220b0`).
     pub cop_spawn_speed: HashMap<u32, f32>,
@@ -331,6 +346,7 @@ fn heat_level(o: &Object) -> HeatLevel {
         cooldown_time: float(o, h::COOLDOWN_TIME),
         lose_radius: float(o, h::LOSE_RADIUS),
         cooldown_allowed: boolean(o, h::COOLDOWN_ALLOWED),
+        forced_number: boolean(o, h::FORCED_NUMBER),
         level_up_action: uint(o, h::LEVEL_UP_ACTION),
         helicopter: uint(o, h::HELICOPTER),
         main: behaviour(sub(h::MAIN)),
@@ -418,6 +434,9 @@ impl AssetStore {
         }
         cfg.levels = level_ids.iter().filter_map(|id| levels.get(id).cloned()).collect();
         cfg.levels_by_id = levels;
+        for &(id, player_type) in &cop_types {
+            cfg.cop_type_of_ai.entry(player_type).or_insert(id);
+        }
         for (id, player_type) in cop_types {
             let Some(&(rollout, takedown, spawn_speed)) = player_types.get(&player_type) else { continue };
             cfg.cop_spawn_speed.insert(id, spawn_speed);

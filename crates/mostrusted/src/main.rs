@@ -1568,6 +1568,9 @@ fn receive_assets(
                 }
                 // A runtime placement (a roadblock's) belongs to no track unit: its owner removes it.
                 match tag {
+                    Some(tag) if tag >= cutscene_spawns::ENTITY_TAG => {
+                        commands.entity(root).insert(cutscene_spawns::SequenceEntity(tag));
+                    }
                     Some(tag) => {
                         commands.entity(root).insert(roadblock::RoadblockPiece(tag));
                     }

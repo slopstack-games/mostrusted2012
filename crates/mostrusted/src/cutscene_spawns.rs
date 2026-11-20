@@ -15,8 +15,14 @@
 //! - **`OverrideAvailableTrafficSequenceItem`**: traffic picks only the listed types while in range (`FUN_00851f00`
 //!   / `FUN_00850050`, traffic messages 0x17 / 0x18).
 //! - **`SetPlayerDamageSequenceItem`**: the player's car's zone damage at the start (`FUN_00855110`).
-//! - `GameplaySequenceItem`, `SpawnDynamicEntitySequenceItem`, `SpawnTrafficSequenceItem`: read, logged once, not
-//!   carried out (their targets are not in the runtime; research log 2026-11-19).
+//! - **`GameplaySequenceItem`** (`FUN_00854990`): type 0 `Mode.ForceEnd`, 1 the forced heat level (`police.rs`
+//!   [`Police::force_heat_level`]), 0xc the AI cars released, 0xe the heat set to a level's start; the other types
+//!   are logged (their targets are not in the runtime; research log 2026-11-20).
+//! - **`SpawnDynamicEntitySequenceItem`**: from 2 s before the start the world object is ordered from the loader
+//!   (`FUN_008534f0`, world message 0), in range it stands on its `AnimatedDynamicEntityBehaviour` clip
+//!   (`FUN_00855520`, message 8), the stop removes it (`FUN_008503e0`, message 3).
+//! - **`SpawnTrafficSequenceItem`**: a lane traffic car at the first trigger (`FUN_00853660` → traffic message 0x15,
+//!   [`crate::traffic::TrafficSystem::spawn_sequence_car`]).
 //!
 //! Model decisions (marked MODEL below): cars for these items are loaded from the sequence's start (the loader
 //! needs time; the game streams them from the lead time on); an `AddRaceCar` whose binding names a racer moves that
@@ -85,6 +91,10 @@ struct Spawns {
     roles: Vec<(u32, Role)>,
     /// Poses for the next fixed tick: entity, position, rotation, velocity.
     poses: Vec<(Entity, Vec3, Quat, Vec3)>,
+    /// Dynamic entities' poses for the next fixed tick.
+    entity_poses: Vec<(Entity, Vec3, Quat)>,
+    /// The next loader tag (+ [`ENTITY_TAG`]).
+    next_tag: u32,
     traffic_override: bool,
 }
 
@@ -105,13 +115,14 @@ fn run_spawns(
     mut opponents: ResMut<crate::ai::Opponents>,
     requests: Option<Res<LoaderRequests>>,
     (mut traffic, mut models): (Option<ResMut<crate::traffic::TrafficSystem>>, ResMut<crate::traffic::TrafficModels>),
-    mut police: Option<ResMut<Police>>,
-    racers: Query<(Entity, &Racer)>,
-    player: Query<Entity, (With<Car>, With<Player>)>,
+    (mut police, logic): (Option<ResMut<Police>>, Option<NonSend<crate::world_logic::WorldLogic>>),
+    (racers, cops, entities): (Query<(Entity, &Racer)>, Query<(Entity, &Cop)>, Query<(Entity, &SequenceEntity)>),
+    player: Query<(Entity, &Transform), (With<Car>, With<Player>)>,
     mut damage: Query<&mut crate::damage::CarDamage, With<Player>>,
     spatial: SpatialQuery,
 ) {
     let spawns = &mut *spawns;
+    let mut released: Vec<u32> = Vec::new();
     for (slot, spec, parts) in opponents.scripted.drain(..) {
         spawns.arrived.insert(slot, (spec, parts));
     }
@@ -132,8 +143,16 @@ fn run_spawns(
         stop_all(&mut commands, spawns, traffic.as_deref_mut());
         spawns.seq = key;
     }
+    // Objects that arrive for an item no longer running (the sequence stopped while they loaded) go.
+    for (e, tag) in &entities {
+        let live = spawns.items.values().any(|st| !st.stopped && st.slot == Some(tag.0 as usize));
+        if !live {
+            commands.entity(e).despawn();
+        }
+    }
     let Some((_, seq, t)) = clock else { return };
-    let player = player.single().ok();
+    let player_pos = player.single().ok().map(|(_, t)| t.translation);
+    let player = player.single().ok().map(|(e, _)| e);
     let racer_entity = |r: RacerRef| -> Option<Entity> {
         match r {
             RacerRef::LocalPlayer => player,
@@ -221,7 +240,10 @@ fn run_spawns(
                     state.owned = c.release;
                 }
                 if past && state.entity.is_some() {
-                    // `FUN_00852de0`: released only with the flag (`FUN_006ce180`(slot, 3)).
+                    // `FUN_00852de0`: released only with the flag (`FUN_006ce180`(slot, 3)) once `FUN_006b8840` allows: the
+                    // spawn's timer (+0x5c8) is −1 (`FUN_006ce030`'s last argument, `.rdata` 0x00f8f340), so at once.
+                    // Without the flag the cop stays, as any AI cop: the coordinator adopts it (`FUN_00521610`, record
+                    // +0x1c / +0x24 set) and removes it off screen beyond the level's distance (`FUN_00522c40`).
                     if c.release
                         && let Some(e) = state.entity
                     {
@@ -284,24 +306,209 @@ fn run_spawns(
                     info!("cutscene: player damage set to {:?}", d.posted());
                 }
             }
-            ItemKind::Gameplay { data, trigger_type } if in_range && !state.entered => {
-                state.entered = true;
-                info!(
-                    "cutscene: GameplaySequenceItem {trigger_type} (data {data}, binding {:?}) not carried out",
-                    item.enabled
-                );
+            ItemKind::Gameplay { data, trigger_type } => {
+                if in_range && !state.entered {
+                    state.entered = true;
+                    let ctx = GameplayCtx {
+                        index,
+                        data: *data,
+                        police: police.as_deref_mut(),
+                        logic: logic.as_deref(),
+                        released: &mut released,
+                    };
+                    gameplay_enter(*trigger_type, item.enabled.as_str(), ctx);
+                }
+                if past && state.entered && !state.stopped {
+                    // `FUN_00851b20`: type 6 → `FUN_008433b0`(0); type 7 repeats the respawn once.
+                    if matches!(*trigger_type, 6 | 7) {
+                        info!("cutscene: GameplaySequenceItem {trigger_type} stop: not carried out (see its enter)");
+                    }
+                    state.stopped = true;
+                }
             }
-            ItemKind::DynamicEntity(d) if in_range && !state.entered => {
-                state.entered = true;
-                info!("cutscene: SpawnDynamicEntitySequenceItem {:?} not carried out", d.world_component);
+            ItemKind::DynamicEntity(d) => {
+                // `FUN_008534f0` from the lead time (2 s, `0x0085eec0`): the entity is ordered once.
+                let Some(object) = d.world_component else {
+                    if in_range && !state.entered {
+                        state.entered = true;
+                        info!("cutscene: SpawnDynamicEntitySequenceItem {index}: no world component");
+                    }
+                    continue;
+                };
+                if state.slot.is_none() && !past && t >= item.start - ENTITY_LEAD {
+                    state.slot = order_entity(&mut spawns.next_tag, requests, object, d);
+                }
+                if state.entity.is_none()
+                    && let Some(tag) = state.slot
+                    && let Some((e, _)) = entities.iter().find(|(_, s)| s.0 as usize == tag)
+                {
+                    state.entity = Some(e);
+                    state.owned = true;
+                }
+                if in_range && !state.entered && state.entity.is_some() {
+                    // `FUN_00855520`: the behaviours attach (message 8).
+                    state.entered = true;
+                    info!(
+                        "cutscene: dynamic entity {object} placed at {t:.2} s ({} clip frames{})",
+                        d.keys.len(),
+                        if d.other_behaviours.is_empty() {
+                            String::new()
+                        } else {
+                            format!("; not carried out: {:?}", d.other_behaviours)
+                        }
+                    );
+                }
+                if in_range
+                    && state.entered
+                    && let Some(e) = state.entity
+                {
+                    let pose = match d.key_at(local) {
+                        Some(k) => (Vec3::from(k.translation), Quat::from_array(k.rotation).normalize()),
+                        None => (Vec3::from(d.position), Quat::from_array(d.rotation).normalize()),
+                    };
+                    spawns.entity_poses.push((e, pose.0, pose.1));
+                }
+                if past {
+                    // `FUN_008503e0`: message 3, the entity goes.
+                    if let Some(e) = state.entity.take() {
+                        commands.entity(e).despawn();
+                    }
+                    state.stopped = true;
+                }
             }
             ItemKind::SpawnTraffic(s) if in_range && !state.entered => {
+                // `FUN_00853660`: the first trigger's point (every item in the data uses one trigger; the other
+                // branches, the first `Position` entry or `PositionBinding`, are unused) → traffic message 0x15.
                 state.entered = true;
-                info!("cutscene: SpawnTrafficSequenceItem {} not carried out", s.vehicle);
+                let placed = match (s.points.first(), traffic.as_deref_mut()) {
+                    (Some((p, _)), Some(sys)) => match sys.vehicle_index(s.vehicle) {
+                        Some(v) => sys.spawn_sequence_car(Vec3::from(*p), v, s.payload, player_pos, &mut commands),
+                        None => false,
+                    },
+                    _ => false,
+                };
+                info!("cutscene: SpawnTraffic {} at trigger {:?}: placed {placed}", s.vehicle, s.triggers.first());
             }
             _ => {}
         }
     }
+    // `GameplaySequenceItem` 0xc: the AI cars of the listed types go (`FUN_006ce180`(slot, 4)) where the car exists
+    // (`FUN_006ba2a0`) and may be released (`FUN_006b8840`: every AI spawn sets the timer +0x5c8 to −1, so only the
+    // unread +0x1c0 / +0x1d0 and the vehicle's +0x18f could hold one; taken as clear). The AI cars are the player
+    // manager's slots 12..23: the racers, the coordinator's cops and the sequences' cops. MODEL: only the sequences'
+    // cops carry their `AIPlayerType` here, so a type other than 0 (all) matches only those (the data only uses 0).
+    for ty in released {
+        let mut n = 0;
+        for (index, item) in seq.items.iter().enumerate() {
+            if let ItemKind::SpawnCop(c) = &item.kind
+                && (ty == 0 || c.ai_type == ty)
+                && let Some(state) = spawns.items.get_mut(&index)
+                && let Some(e) = state.entity.take()
+            {
+                commands.entity(e).despawn();
+                state.stopped = true;
+                n += 1;
+            }
+        }
+        if ty == 0 {
+            for (e, _) in cops.iter() {
+                commands.entity(e).try_despawn();
+                n += 1;
+            }
+            for (e, r) in racers.iter() {
+                if !r.player {
+                    commands.entity(e).try_despawn();
+                    n += 1;
+                }
+            }
+        }
+        info!("cutscene: GameplaySequenceItem 12: {n} AI cars of type {ty} released");
+    }
+}
+
+/// What a `GameplaySequenceItem`'s enter reaches.
+struct GameplayCtx<'a> {
+    index: usize,
+    data: u32,
+    police: Option<&'a mut Police>,
+    logic: Option<&'a crate::world_logic::WorldLogic>,
+    /// The AI types to release after the pass (type 0xc).
+    released: &'a mut Vec<u32>,
+}
+
+/// `FUN_00854990`: the switch on `TriggerType` with `Data`. Carried out: 0 (`Mode.ForceEnd`, GMM+0x2e7c), 1 (the
+/// forced heat level), 0xc (AI cars released, after the pass), 0xe (the heat set to a level's start). The others
+/// reach systems the runtime does not have and are logged (research log 2026-11-20).
+fn gameplay_enter(trigger_type: u16, binding: &str, c: GameplayCtx) {
+    let GameplayCtx { index, data, police, logic, released } = c;
+    match trigger_type {
+        0 => match logic {
+            // GMM+0x2e7c = 1: `Mode.ForceEnd` (the race machine's 730009 ends the mode on it).
+            Some(l) => {
+                l.state.borrow_mut().game_modes.force_end = true;
+                info!("cutscene: GameplaySequenceItem {index}: Mode.ForceEnd set");
+            }
+            None => info!("cutscene: GameplaySequenceItem {index}: Mode.ForceEnd (no logic to read it)"),
+        },
+        // `FUN_006675e0` on G+0x2f414, then `FUN_00656180` (empty).
+        1 => match police {
+            Some(p) => {
+                let rose = p.force_heat_level(data);
+                let row = p.heat_level().map(|l| (l.id, l.level));
+                info!("cutscene: GameplaySequenceItem {index}: heat level {data} forced (row {row:?})");
+                if rose {
+                    info!("cutscene: the forced level rose: its scoring action (`FUN_006a8050`) is not posted");
+                }
+            }
+            None => info!("cutscene: GameplaySequenceItem {index}: heat level {data}: no police"),
+        },
+        0xc => released.push(data),
+        0xe => {
+            let done = police.is_some_and(|p| p.set_heat_to_level(data));
+            info!("cutscene: GameplaySequenceItem {index}: heat set to the start of level {data}: {done}");
+        }
+        // 2: sequence message 0xb; 3: `FUN_006561a0`; 5: GMM+0x2ead; 6: `FUN_008433b0`(1); 7: the player's respawn
+        // (`FUN_006cd340`: no respawn request outside the crash reset here); 8: `FUN_006f5d50`(Data); 0xd:
+        // `FUN_006cd360`; 0xf: camera event 0x1a and `FUN_00658140`; 0x10: `FUN_006ca4f0`; 0x13: `FUN_008456d0`
+        // (the world +0x2f484 records cleared). Other values: no case.
+        other => info!(
+            "cutscene: GameplaySequenceItem {index} type {other} (data {data}, binding {binding:?}) not carried out"
+        ),
+    }
+}
+
+/// A world object a `SpawnDynamicEntitySequenceItem` placed (the loader's `Msg::Prop` with a tag from
+/// [`ENTITY_TAG`] on): this module poses it on its clip and removes it at the stop.
+#[derive(Component)]
+pub struct SequenceEntity(pub u32);
+
+/// Loader tags of the objects ordered here (`roadblock.rs` uses the ones below).
+pub const ENTITY_TAG: u32 = 0xc000_0000;
+/// `SpawnDynamicEntitySequenceItem`'s lead time (`0x0085eec0` returns `.rdata` 0x00f8a808 = 2 s).
+const ENTITY_LEAD: f32 = 2.0;
+
+/// `FUN_008534f0`'s world message 0: the object at the item's position, facing its rotation's heading (the pose is
+/// set in full once it stands). Returns the tag as the state's slot.
+fn order_entity(
+    next: &mut u32,
+    requests: Option<&LoaderRequests>,
+    object: ResourceId,
+    d: &mw_assets::sequence::DynamicEntity,
+) -> Option<usize> {
+    let requests = requests?;
+    let tag = ENTITY_TAG + *next;
+    *next += 1;
+    let rot = Quat::from_array(d.rotation).normalize();
+    let f = rot * Vec3::Z;
+    let prop = crate::loader::TestProp {
+        object,
+        kind: mw_assets::props::ObjectKind::Dynamic,
+        position: Vec3::from(d.position),
+        yaw: f.x.atan2(f.z),
+    };
+    let req =
+        CarRequest { bundle: String::new(), paint_index: 0, traffic: None, opponent: None, prop: Some((prop, tag)) };
+    requests.0.send(req).ok().map(|_| tag as usize)
 }
 
 fn spawns_order(next: &mut usize, requests: Option<&LoaderRequests>, vehicle: u32) -> Option<usize> {
@@ -370,7 +577,10 @@ fn spawn_cop(
     let car = build(commands, &format!("sequence cop {id}"), spec, parts, start, heading, dir * c.speed_mph * MPH);
     let (command, name) = cop_command(c.command);
     let (_, mode) = role_of(command);
-    let (cop, status) = Cop::scripted(id, 0, mode);
+    // The cop's type: the `Gameplay.CopType` of its `AIPlayerType` (the coordinator counts cops of the behaviour's
+    // types by it, `FUN_00526e30`); 0 (the default slot) when no cop type names it.
+    let cop_type = police.map_or(0, |p| p.cop_type_of_ai(c.ai_type));
+    let (cop, status) = Cop::scripted(id, cop_type, mode);
     commands.entity(car).insert((cop, status));
     match police.and_then(|p| p.graph()).and_then(|g| crate::ai::route_from_ai_graph(g, start, heading, 2000.0)) {
         Some(route) => {
@@ -382,7 +592,7 @@ fn spawn_cop(
         None => warn!("cutscene: no road for the sequence cop at {start:.0?}"),
     }
     info!(
-        "cutscene: SpawnAICopCar: AI type {} ({}) at {start:.0?}, {} mph, command {name}",
+        "cutscene: SpawnAICopCar: AI type {} (cop type {cop_type}, {}) at {start:.0?}, {} mph, command {name}",
         c.ai_type, spec.bundle, c.speed_mph
     );
     car
@@ -416,12 +626,26 @@ fn stop_all(commands: &mut Commands, spawns: &mut Spawns, traffic: Option<&mut c
     spawns.traffic_override = false;
     spawns.arrived.clear();
     spawns.poses.clear();
+    spawns.entity_poses.clear();
 }
 
+#[allow(clippy::type_complexity)]
 fn apply_poses(
     mut spawns: ResMut<Spawns>,
-    mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity)>,
+    mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity), Without<SequenceEntity>>,
+    mut entities: Query<(&mut Transform, Option<&mut crate::props::PropBody>), With<SequenceEntity>>,
 ) {
+    // MODEL: the `AnimatedDynamicEntityBehaviour` (its handler not read) stands the object on its clip's bone, as the
+    // animated race cars and traffic; its home (the prop reset's pose) follows.
+    for (entity, position, rotation) in spawns.entity_poses.drain(..) {
+        if let Ok((mut t, body)) = entities.get_mut(entity) {
+            t.translation = position;
+            t.rotation = rotation;
+            if let Some(mut b) = body {
+                b.home = *t;
+            }
+        }
+    }
     for (entity, position, rotation, velocity) in spawns.poses.drain(..) {
         if let Ok((mut t, mut lin, mut ang)) = cars.get_mut(entity) {
             t.translation = position;

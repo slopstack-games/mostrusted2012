@@ -182,7 +182,11 @@ pub struct SpawnTraffic {
 }
 
 /// `SpawnDynamicEntitySequenceItem`: a world object (`WorldComponent`) at `InitialPosition` / `InitialRotation`
-/// with its behaviours.
+/// with its behaviours. Lead 2 s (`0x0085eec0` → `.rdata` 0x00f8a808); prepare `FUN_008534f0` posts world message 0
+/// (`FUN_00843d30` → `FUN_0084c380`: the component's id (+0x50), the matrix of the rotation (+0x40) and position
+/// (+0x30), zero velocity) and is ready once the request's status (+0x18) is 3, keeping the entity's handle (+0x20
+/// → +0x28); enter `FUN_00855520` posts message 8 {item, behaviour id, handle} per `Behaviours` entry (+0x58, count
+/// +0x5c); stop `FUN_008503e0` posts message 3 (`FUN_00843e60`: the entity goes).
 #[derive(Debug, Clone)]
 pub struct DynamicEntity {
     pub position: [f32; 3],
@@ -190,6 +194,18 @@ pub struct DynamicEntity {
     pub rotation: [f32; 4],
     pub world_component: Option<ResourceId>,
     pub behaviours: Vec<ResourceId>,
+    /// The first `AnimatedDynamicEntityBehaviour`'s clip (`Animation` on `Skeleton`): its first animated bone per
+    /// frame, world space, and the clip's frame rate.
+    pub keys: Vec<super::CameraKey>,
+    pub frame_rate: f32,
+    /// The behaviours' other types (not carried out).
+    pub other_behaviours: Vec<String>,
+}
+
+impl DynamicEntity {
+    pub fn key_at(&self, t: f32) -> Option<super::CameraKey> {
+        clip_key(&self.keys, self.frame_rate, t)
+    }
 }
 
 /// `SetPlayerDamageSequenceItem` (`FUN_00855110`): the eight values (percent, × 0.01 `.rdata` 0x00f9d474) are posted
@@ -397,12 +413,30 @@ impl SequenceContext<'_> {
                     payload: raw_u64(item, 0x3ed4_7c75),
                 }))
             }
-            "SpawnDynamicEntitySequenceItem" => ItemKind::DynamicEntity(Box::new(DynamicEntity {
-                position: vec3(item.get(f::INITIAL_POSITION)).unwrap_or_default(),
-                rotation: quat(item.get(f::INITIAL_ROTATION)).unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                world_component: handle(item.get(f::WORLD_COMPONENT)),
-                behaviours: handles(item, f::BEHAVIOURS),
-            })),
+            "SpawnDynamicEntitySequenceItem" => {
+                let behaviours = handles(item, f::BEHAVIOURS);
+                let (mut animation, mut other_behaviours) = (None, Vec::new());
+                for &b in &behaviours {
+                    match self.store.genesys_object(b) {
+                        Ok(o) if short(&o) == "AnimatedDynamicEntityBehaviour" => {
+                            if animation.is_none() {
+                                animation = self.animation(handle(o.get(super::h::ANIMATION)));
+                            }
+                        }
+                        Ok(o) => other_behaviours.push(short(&o).to_string()),
+                        Err(e) => other_behaviours.push(e.to_string()),
+                    }
+                }
+                ItemKind::DynamicEntity(Box::new(DynamicEntity {
+                    position: vec3(item.get(f::INITIAL_POSITION)).unwrap_or_default(),
+                    rotation: quat(item.get(f::INITIAL_ROTATION)).unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                    world_component: handle(item.get(f::WORLD_COMPONENT)),
+                    behaviours,
+                    keys: animation.as_ref().map(bone_keys).unwrap_or_default(),
+                    frame_rate: animation.as_ref().map_or(30.0, |a| a.frame_rate),
+                    other_behaviours,
+                }))
+            }
             "SetPlayerDamageSequenceItem" => ItemKind::PlayerDamage(PlayerDamage {
                 target: uint(item, f::DAMAGE_TARGET),
                 fields: f::DAMAGE.map(|k| float(item, k).unwrap_or(0.0)),

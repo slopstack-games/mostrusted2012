@@ -512,8 +512,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    played. Timeline controllers ported (2026-11-19,
    `mw_assets::timeline`: all six types, conducted sequences on their own clocks; cutscenes and the logic's
    playbacks). Open: the HUD sequences' controllers, binding / controller clocks. The event intros' spawn items
-   (AddRaceCar, SpawnAICopCar, animated traffic, traffic override, player damage; `cutscene_spawns.rs`); Gameplay,
-   SpawnDynamicEntity, SpawnTraffic read but not carried out (decomp.md "Sequence spawn items").
+   (AddRaceCar, SpawnAICopCar, animated traffic, traffic override, player damage, Gameplay switches 0 / 1 / 0xc / 0xe,
+   dynamic entities on their clips, SpawnTraffic; `cutscene_spawns.rs`) and the event's own heat levels (decomp.md
+   "Sequence spawn items"); Gameplay 7 / 0xf / 0x13 and the feedback groups' sequences are not played.
 7. `[~]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD

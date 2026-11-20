@@ -96,7 +96,7 @@ impl Plugin for PolicePlugin {
             crate::bust_camera::run_bust_camera.after(crate::camera::GameplayCamera).after(crate::crash::run_sequence),
         )
         .add_systems(Update, (spawn_cops, crate::roadblock::place_roadblocks, log_police).chain())
-        .add_systems(FixedUpdate, (police_tick, cop_drive).chain().before(crate::ai::ai_drive));
+        .add_systems(FixedUpdate, (sync_event_levels, police_tick, cop_drive).chain().before(crate::ai::ai_drive));
         if self.test {
             app.insert_resource(PursuitTest::default()).add_systems(Update, run_pursuit_test.before(spawn_cops));
         }
@@ -303,6 +303,50 @@ impl Police {
     pub fn heat_level(&self) -> Option<&HeatLevel> {
         self.core.pursuit.level(self.cfg.as_ref()?)
     }
+
+    /// The `Gameplay.CopType` of an `AIPlayerType` (`PoliceConfig::cop_type_of_ai`), 0 when none names it.
+    pub fn cop_type_of_ai(&self, ai_type: u32) -> u32 {
+        self.cfg.as_ref().and_then(|c| c.cop_type_of_ai.get(&ai_type).copied()).unwrap_or(0)
+    }
+
+    /// `FUN_006675e0` (`GameplaySequenceItem` type 1, `cutscene_spawns.rs`): the heat level `id` is forced (G+0x2f414
+    /// +0xa8 = the row `FUN_00667310` finds by id; none for an unknown id). Returns whether the shown level number
+    /// rose: the original then posts the scoring action of `GameLogicConfig`'s record +0xec (`FUN_006a8050`), which
+    /// the runtime has no poster for (logged by the caller).
+    pub fn force_heat_level(&mut self, id: u32) -> bool {
+        let Some(cfg) = self.cfg.as_mut() else { return false };
+        let before = cfg.forced_level.as_ref().map(|l| l.level);
+        cfg.forced_level = cfg.levels_by_id.get(&id).cloned();
+        matches!((before, cfg.forced_level.as_ref().map(|l| l.level)), (Some(b), Some(a)) if a > b)
+    }
+
+    /// `GameplaySequenceItem` type 0xe (`FUN_00854990`): with an event running, the heat is set to the threshold of the
+    /// row before `id` in the event's own list (the start of `id`'s band): the player's heat (+0x3d8) and +0x3dc /
+    /// +0x3e8 are zeroed, then the threshold is added (`FUN_006bdac0`, capped as any heat). An id not in the list
+    /// reads the row before the list in the original (index −1, undefined): nothing is done here.
+    pub fn set_heat_to_level(&mut self, id: u32) -> bool {
+        let Some(cfg) = self.cfg.as_ref() else { return false };
+        let Some(k) = cfg.event_levels.iter().position(|l| l.id == id).filter(|&k| k > 0) else { return false };
+        let threshold = cfg.event_levels[k - 1].threshold;
+        let mut events = Vec::new();
+        self.core.pursuit.heat = 0.0;
+        self.core.pursuit.add_heat(cfg, &PursuitMode::default(), threshold, &mut events);
+        true
+    }
+}
+
+/// The running event's own heat levels (`FUN_00669640` reads them through GMM+0x2ce0): an event's `OfflineEvent`
+/// `ab4e53fd` list while a race runs ([`crate::race::RaceState`]), none in free roam.
+fn sync_event_levels(mut police: ResMut<Police>, race: Option<Res<crate::race::RaceState>>) {
+    let ids: &[u32] = race.as_ref().map_or(&[], |r| &r.event.heat_levels);
+    let Some(cfg) = police.cfg.as_mut() else { return };
+    if cfg.event_levels.len() == ids.len() && cfg.event_levels.iter().zip(ids).all(|(l, id)| l.id == *id) {
+        return;
+    }
+    cfg.event_levels = ids.iter().filter_map(|id| cfg.levels_by_id.get(id).cloned()).collect();
+    let rows: Vec<_> =
+        cfg.event_levels.iter().map(|l| (l.id, l.level, l.threshold, l.cooldown_allowed, l.remove_distance)).collect();
+    info!("police: the event's heat levels {ids:?}: (id, level, threshold, cooldown, remove m) {rows:?}");
 }
 
 /// The cop's mode for a role.

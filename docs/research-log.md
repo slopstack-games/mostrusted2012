@@ -11,6 +11,59 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-20: the intros' Gameplay switches, dynamic entities and SpawnTraffic; the event's heat levels (PLAN M8.6)
+
+Read from the dump and `re/out/live/text.asm`; ported in `cutscene_spawns.rs`, `mw_police::heat`, `police.rs`,
+`traffic.rs`; decomp.md "Sequence spawn items" and "The heat level row".
+- **Where the items are**: all 110 Gameplay, 21 SpawnDynamicEntity and 32 SpawnTraffic items are in feedback-group
+  bundles (`EN_US/FEEDBACKGROUPS`). Played by the runtime (event intros / outros): Gameplay types 12 (data 0) and 0
+  in 16 events' outros (13.30 / 22.30 s, e.g. MOST WANTED 6, 1399902, outro 1689498), type 1 in 1433056's intro
+  (24.2 s, level 1556556); SpawnDynamicEntity in the intros of 857703 (TURF WAR, 17), 857717 (2), 1439943 (2).
+  SpawnTraffic only in events' in-race feedback groups (1119746 of 983993 CANNONBALL RUN, 1264936, 1439226, 1439295),
+  which the runtime does not play (`feedback.rs` plays layouts only): ported, not reached.
+- **Heat level row** (`FUN_0066aa30`, under `FUN_006bdc00`): G+0x2f414 +0xa8 (the level a Gameplay type 1 forced,
+  `FUN_006675e0`; its only writer) when set, else `FUN_00669640`: with an offline event running (GMM+0x2ce0, not
+  online) and the event's own list non-empty, the list's first row at heat 0 outside a chase, else its first row
+  from the second on above the heat; a heat above them all falls through to the free-roam rows. `FUN_00669860` (the
+  row below) returns the forced level first, then the event list. `FUN_0066a7b0` (`HeatLevelInt`) takes the forced
+  level only when its `a53c2545` (+0x113) is set. Not traced: whether `FUN_006673a0` (the cap) reads the event list
+  (it still uses the free-roam rows).
+- **HARBOR RUN** (906146): its rows 1519266 (level 0) and 1700216 (level 3, threshold 18) both have no cooldown
+  (`249ed427` false), so the chase starts at once with the event (the intro's two Chasing cops chase a wanted
+  player). The intro's cops were removed because they were adopted as type 0, which no behaviour wants, i.e. surplus,
+  removed beyond the surplus distance in a chase. The original adopts every AI cop in the player manager's cop list
+  (PM+0xa630, `FUN_00521610`: record +0x1c and +0x24 = 1) and counts it by its type; the cop's `Gameplay.CopType` is now
+  the first one whose `AIPlayerType` is the item's (1156780 → 1700225, the level's own type), and both cops stay and
+  chase (scratch/hr20.log; `police: cop 2/3 removed` are the coordinator's surplus cops now).
+- **Release** (`FUN_006b8840`): false while +0x1c0 or +0x1d0 is set, while the timer +0x5c8 is ≥ 0 (counts down in
+  the AI update at 0x006d17fa; every spawn, `FUN_006ce030`'s last argument, sets −1: `.rdata` 0x00f8f340), or while
+  the car's +0x18f is set. +0x1c0 / +0x1d0 / +0x18f writers not traced: taken as clear. A sequence cop with the
+  release flag goes at once at the stop; without it it stays under the coordinator as any AI cop.
+- **Gameplay types carried out**: 0 `Mode.ForceEnd` (GMM+0x2e7c, the `Mode` table's `ForceEnd`; cleared at 0x0070b3ab in
+  `FUN_0070b1e0` and the reset at 0x006f8a65; set on `WorldLogic`, read by the HSM only under `--hsm`); 1 the forced
+  level (the rise's scoring action, GameLogicConfig record +0xec through `FUN_006a8050`, is not posted); 0xc AI cars
+  released (`FUN_006ce180`(slot, 4): racers, coordinator cops, sequence cops; MODEL: a type other than 0 matches only
+  the sequence cops, the only ones carrying their AI type; the data uses 0 only); 0xe the heat set to the threshold of
+  the row before `Data` in the event's list (player +0x3d8 / +0x3dc / +0x3e8 zeroed, then `FUN_006bdac0`). Logged:
+  7 (respawn `FUN_006cd340`: no respawn request outside crash.rs's reset), 15 (camera event 0x1a, `FUN_00658140`),
+  19 (`FUN_008456d0`: world +0x2f484 records cleared), 17 (no case).
+- **SpawnDynamicEntity**: world messages 0 / 8 / 3 (decomp.md). The components are `WorldObject`s in the intro's own
+  feedback bundle (a3e685b0 in 1933483), loaded as runtime props (`CarRequest::prop`, tags from 0xc0000000 →
+  `SequenceEntity`). The behaviours are `AnimatedDynamicEntityBehaviour` (an `Animation` on a `Skeleton`, string
+  `58343309` = "entity"); MODEL (handler not read): the object stands on the clip's first animated bone (as the
+  race-car and traffic clips), kinematic from the scene's side. Verified TURF WAR (857703): cones, a bench and a bin
+  fly past the arch at 15 s (scratch/shots/tw15.png), shadows of the 7.43 s objects at 9 s (tw9.png).
+- **SpawnTraffic** (`FUN_00853660`): the first trigger's point and direction, else the first `Position` (QuatPos at
+  +0x3c, count +0x42), else the first `PositionBinding` (+0x30, count +0x40); trigger count is +0x43 (all 32 items use
+  one trigger) → traffic message 0x15 (`FUN_00846390`) → queue world+0x33ac0 (`FUN_00618a10`) → `FUN_0060aba0`:
+  clear within 20 m (`FUN_0060a130`), nearest lane within 25 m (`FUN_0043a8b0`, extents 0x00fb24c0), `FUN_00608720`
+  kind 1 with the payload as the paint id (0: round-robin `world+0xa0390`). Open: the heading tolerance
+  (`FUN_00ede95d`(30.0), a CRT routine outside the dump).
+- **Sequence messages 4 / 5 / 0x36 and `FUN_005f9480`(0)**: not needed by these items (AddRaceCar's existing-car path
+  and the override's flush); still open.
+- **Captures that would confirm**: HARBOR RUN's start (the two cops behind the grid chasing, the heat bar at once),
+  TURF WAR's intro at 9 / 15 s, MOST WANTED 6's post-race sequence (AI cars gone at 13.3 s, the mode ending at 22.3 s).
+
 ## 2026-11-19: the cars' damage sequences and their locator spot effects (`damage_vfx.rs`)
 
 The 1,672 `VfxLocatorGroupVehicleSpotEffectSequenceItem`s (836 per LOD set, 93 cars) all sit in the cars'

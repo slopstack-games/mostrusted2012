@@ -846,6 +846,36 @@ impl TrafficSystem {
         self.vehicle_override = vehicles;
     }
 
+    /// `SpawnTrafficSequenceItem` (`cutscene_spawns.rs`): traffic message 0x15 (`FUN_00846390`) queues a request
+    /// (`FUN_00618a10`, world +0x33ac0) that `FUN_0060aba0` serves on its next pass: the traffic within 20 m
+    /// (`.rdata` 0x00fa3ba0) of the point is cleared (`FUN_0060a130`), the nearest lane point within 25 m (0x00fb24c0)
+    /// in an active hull is found (`FUN_0043a8b0`) and a lane car of the type is placed there (`FUN_00608720`, kind 1:
+    /// the player's clearance applies) in the paint whose id is `paint_id`, or the type's next paint for 0.
+    /// MODEL: every car within 20 m is cleared (the game skips some lane states and adds a height term, 0x00fb2330);
+    /// the request's heading tolerance (`FUN_00ede95d`(30.0), a CRT function outside the dump) is not applied.
+    pub fn spawn_sequence_car(
+        &mut self,
+        at: Vec3,
+        vehicle: usize,
+        paint_id: u64,
+        player: Option<Vec3>,
+        commands: &mut Commands,
+    ) -> bool {
+        self.clear_near(at, 20.0, commands);
+        let Some(lane) = self.nearest_lane(at, 25.0, None, true) else { return false };
+        let Some(v) = self.data.vehicles.get(vehicle) else { return false };
+        let paint = match v.paints.iter().position(|(id, _)| paint_id != 0 && id.0 == paint_id) {
+            Some(i) => i,
+            None if v.paints.is_empty() => 0,
+            None => {
+                let c = &mut self.paint_cursor[vehicle];
+                *c = (*c + 1) % v.paints.len();
+                *c
+            }
+        };
+        self.place(lane.hull, lane.section, lane.dist, (vehicle, paint), player)
+    }
+
     /// Remove every traffic car (lane followers and crashed ones) within `radius` of `point`
     /// (`ClearTrafficSequenceItem`, `cutscene.rs`).
     pub fn clear_near(&mut self, point: Vec3, radius: f32, commands: &mut Commands) -> usize {

@@ -247,17 +247,17 @@ pub struct Pursuit {
 
 impl Pursuit {
     pub fn level<'a>(&self, cfg: &'a PoliceConfig) -> Option<&'a HeatLevel> {
-        heat::level_for(&cfg.levels, self.heat, self.state == PursuitState::Chase)
+        heat::level_row(cfg, self.heat, self.state == PursuitState::Chase)
     }
 
     /// `Player.HeatLevelInt` (`FUN_0066a7b0`).
     pub fn level_number(&self, cfg: &PoliceConfig) -> u8 {
-        self.level(cfg).map_or(0, |l| l.level)
+        heat::level_number(cfg, self.heat, self.state == PursuitState::Chase)
     }
 
     /// `FUN_006bdc50`.
     pub fn heat_progress(&self, cfg: &PoliceConfig) -> f32 {
-        heat::band_progress(&cfg.levels, self.heat, self.state == PursuitState::Chase)
+        heat::band_progress_cfg(cfg, self.heat, self.state == PursuitState::Chase)
     }
 
     /// `Player.PursuitBarEnum` / `Player.PursuitBarProgress` (`FUN_00658080`, `FUN_006580a0`).
@@ -491,7 +491,7 @@ impl Pursuit {
         if clear {
             let level = self.level(cfg).cloned().unwrap_or_default();
             // The band of the level (integer thresholds), at least 1, over the level's cooldown time.
-            let band = (level.threshold - heat::band_low(&cfg.levels, self.heat)).max(1.0);
+            let band = (level.threshold - heat::level_below_cfg(cfg, self.heat).map_or(0.0, |l| l.threshold)).max(1.0);
             let mut rate = band / level.cooldown_time;
             if i.fast_cooldown {
                 rate *= COOLDOWN_FAST;

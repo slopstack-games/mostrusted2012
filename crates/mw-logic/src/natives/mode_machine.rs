@@ -162,6 +162,8 @@ pub fn end_of_event(s: &mut LogicState) {
     s.game_modes.won = true;
     s.game_modes.timer_running = false;
     s.game_modes.end_flag_2e75 = false;
+    // 0x0070b3ab: `ForceEnd` (set by `GameplaySequenceItem` type 0) is cleared with the event.
+    s.game_modes.force_end = false;
     s.game_modes.intro_load_complete = false;
     s.game_modes.switch_to_gameplay_load_world = false;
     s.game_modes.transition_state = 0;

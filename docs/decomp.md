@@ -4792,9 +4792,32 @@ exit (outside the range; the default `0x005421a0` jumps to +0x24 stop). Item dat
 - **`SetPlayerDamageSequenceItem`** (0x00860dc0): enter `FUN_00855110`: the player's car (+0xa0) unless the item's
   +0x20; the eight values (+0x28 … +0x44, percent × 0.01 `.rdata` 0x00f9d474) go out with sequence message 0x23 in the
   order +0x28, +0x38, +0x34, +0x44, +0x2c, +0x3c, +0x30, +0x40 after max(all) × the car's +3000; flags +0x48 / +0x49.
-- **`SpawnDynamicEntitySequenceItem`** (lead `0x0085eec0`, prepare `FUN_008534f0`, enter `FUN_00855520`, stop
-  `FUN_008503e0`) and **`SpawnTrafficSequenceItem`** (enter `FUN_00853660`): read (fields in
-  `mw_assets::sequence::spawns`), handlers not read. `SpawnTraffic` appears in no event sequence.
+- **`SpawnDynamicEntitySequenceItem`** (2026-11-20): lead 2 s (`0x0085eec0` → 0x00f8a808); prepare `FUN_008534f0`
+  (state +0x2c) posts world message 0 (`FUN_00843d30` → `FUN_0084c380`: `WorldComponent` id +0x50, the matrix of
+  `InitialRotation` +0x40 / `InitialPosition` +0x30, zero velocity, status word +0x18) and is ready once the status is
+  3 (handle +0x20 → +0x28); enter `FUN_00855520` queues message 8 {item, behaviour id, handle} on `DAT_010edb20` per
+  `Behaviours` entry (+0x58, count +0x5c); stop `FUN_008503e0` posts message 3 (`FUN_00843e60`, the entity goes). The
+  components are `WorldObject`s, the behaviours `AnimatedDynamicEntityBehaviour` (handler not read).
+- **`SpawnTrafficSequenceItem`** (2026-11-20, enter `FUN_00853660`): the matrix from the first trigger (count +0x43
+  `a41c3076`: `FUN_0053c020` point, `FUN_0042f250` direction), else the first `Position` (QuatPos array +0x3c, count
+  +0x42), else the first `PositionBinding` (+0x30, count +0x40, `FUN_00a50650`); then `FUN_00846390`(vehicle +0x38,
+  payload +0x28 / +0x2c, matrix) = traffic message 0x15 → queue world+0x33ac0 (`FUN_00618a10`, 0x60-byte entries) →
+  `FUN_0060aba0`: traffic within 20 m (0x00fa3ba0) cleared (`FUN_0060a130`), the nearest lane point within 25 m
+  (0x00fb24c0) found (`FUN_0043a8b0`; heading tolerance `FUN_00ede95d`(30.0)), the type (`FUN_005f2fc0`) placed by
+  `FUN_00608720` kind 1 (the player's clearance applies) with the payload as the paint id (0: the round-robin
+  `world+0xa0390`; else the paint whose 64-bit id matches). The ghost queue (message 0x1a) is the second half of the
+  same function (world+0x340d0, kind 2).
+- **Release check `FUN_006b8840`**: false while AI player +0x1c0 or +0x1d0 is set, while +0x5c8 ≥ 0 (a timer the AI
+  update counts down at 0x006d17fa; `FUN_006ce030` stores its last argument there, −1 from the racers'
+  (`FUN_00686f30`), the coordinator's (`FUN_006d6110`) and the sequences' spawns), or while the car's +0x18f is set.
+  `FUN_006ce030` puts a type with +0xb5 / +0xb3 (cops) into PM+0xa630 (count +0xa660), the list the coordinator walks:
+  `FUN_00521610` gives each cop there without a record one (+0x1c = 1, +0x24 = 1, wanted), so sequence cops are
+  adopted and removed like any cop (`FUN_00522c40`: off screen beyond `FUN_00513ef0`'s phase distance, or +0xac when
+  unwanted).
+- **Gameplay** (2026-11-20): type 1's object is G+0x2f414 (`mov ecx,[eax+0x2f414]` at 0x008549e1), the heat level
+  database (id map +0xa0 / +0x98); 0 is `Mode.ForceEnd`; 0xc removes with `FUN_006ce180`(slot, 4) (the AI player's
+  destructor, slot cleared); 0xe reads the event list's entry before `Data`'s. Types in the data: 0, 1, 7, 12, 14, 15,
+  17 (no case), 19.
 
 Ported (`cutscene_spawns.rs`): AddRaceCar (a loader car of the vehicle, posed on its clip every tick, removed at the
 stop), SpawnAICopCar (a police cop on the trigger, rolling, its brain given the command's role), animated traffic
@@ -4803,7 +4826,19 @@ decisions: cars are ordered from the sequence's start; a bound AddRaceCar moves 
 command → role (Chasing / LowSpeedChasing chase, FreeRoam patrol, others wait); the damage message's order is taken
 as the damage clips' zone order (front, rear, left, right, front-left, front-right, rear-left, rear-right; the
 message 0x23 consumer was not found); with the override the flow types' listed entries keep their proportions, or
-the listed types are picked evenly. Not carried out: Gameplay, SpawnDynamicEntity, SpawnTraffic (logged).
+the listed types are picked evenly. Ported 2026-11-20: Gameplay 0 / 1 / 0xc / 0xe (others logged), the dynamic
+entities (runtime props posed on the behaviour's clip: MODEL), SpawnTraffic (`TrafficSystem::spawn_sequence_car`), the
+sequence cop's `Gameplay.CopType` (the first whose `AIPlayerType` is the item's).
+
+#### The heat level row (2026-11-20, `mw_police::heat`)
+
+`FUN_006bdc00` → `FUN_0066aa30`: G+0x2f414 +0xa8 (a forced level) when set, else `FUN_00669640`(heat, chased). With an
+offline event (GMM+0x2ce0, `FUN_006dfed0` false) whose `OfflineEvent.ab4e53fd` list (+0x6c, count +0xde, through
+`FUN_006e66a0`) is not empty: its first row at heat 0 outside a chase, else its first row from the second whose
+`Threshold` (+0x10e) lies above the heat; past them all, or without an event list, the free-roam rows (GameLogicConfig
++0xa0, count +0x2d0). `FUN_00669860` (the row below): the forced level, then the event list, then the free-roam one.
+`FUN_0066a7b0` (`HeatLevelInt`): the forced level's +0x116 when its +0x113 (`a53c2545`) is set. `FUN_006675e0` is the
+only writer of +0xa8; a rise of the shown level posts GameLogicConfig's +0xec scoring action (`FUN_006a8050`).
 
 ## Traffic and AI vehicles
 
