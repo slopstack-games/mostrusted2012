@@ -421,6 +421,7 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                     )
                 }
                 ItemKind::PlayerDamage(d) => format!("player damage {:?} (posted {:?})", d.fields, d.posted()),
+                ItemKind::Entity(e) => format!("world object {e:?}"),
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
@@ -548,6 +549,7 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
             ItemKind::SpawnTraffic(s) => format!("spawn traffic {}", s.vehicle),
             ItemKind::DynamicEntity(d) => format!("dynamic entity {:?}", d.world_component),
             ItemKind::PlayerDamage(d) => format!("player damage {:?}", d.fields),
+            ItemKind::Entity(e) => format!("world object {e:?}"),
             ItemKind::Camera(shots) => {
                 let s: Vec<String> = shots
                     .iter()

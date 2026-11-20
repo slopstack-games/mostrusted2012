@@ -114,7 +114,10 @@ fn run_spawns(
     mut spawns: ResMut<Spawns>,
     mut opponents: ResMut<crate::ai::Opponents>,
     requests: Option<Res<LoaderRequests>>,
-    (mut traffic, mut models): (Option<ResMut<crate::traffic::TrafficSystem>>, ResMut<crate::traffic::TrafficModels>),
+    (mut traffic, mut models): (
+        Option<ResMut<crate::traffic::TrafficSystem>>,
+        Option<ResMut<crate::traffic::TrafficModels>>,
+    ),
     (mut police, logic): (Option<ResMut<Police>>, Option<NonSend<crate::world_logic::WorldLogic>>),
     (racers, cops, entities): (Query<(Entity, &Racer)>, Query<(Entity, &Cop)>, Query<(Entity, &SequenceEntity)>),
     player: Query<(Entity, &Transform), (With<Car>, With<Player>)>,
@@ -253,7 +256,10 @@ fn run_spawns(
                 }
             }
             ItemKind::AnimatedTraffic(a) => {
-                if in_range && let (Some(k), Some(sys)) = (a.key_at(local), traffic.as_deref_mut()) {
+                if in_range
+                    && let (Some(k), Some(sys), Some(models)) =
+                        (a.key_at(local), traffic.as_deref_mut(), models.as_deref_mut())
+                {
                     let pose = Transform::from_translation(Vec3::from(k.translation))
                         .with_rotation(Quat::from_array(k.rotation).normalize());
                     match state.entity {
@@ -263,7 +269,7 @@ fn run_spawns(
                         None => match sys.vehicle_index(a.vehicle) {
                             Some(v) => {
                                 state.entity =
-                                    crate::traffic::spawn_scripted(&mut commands, sys, &mut models, requests, v, pose);
+                                    crate::traffic::spawn_scripted(&mut commands, sys, models, requests, v, pose);
                                 state.owned = true;
                                 if state.entity.is_some() {
                                     info!("cutscene: animated traffic car {} placed at {t:.2} s", a.vehicle);

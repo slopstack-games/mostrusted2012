@@ -64,6 +64,42 @@ Read from the dump and `re/out/live/text.asm`; ported in `cutscene_spawns.rs`, `
 - **Captures that would confirm**: HARBOR RUN's start (the two cops behind the grid chasing, the heat bar at once),
   TURF WAR's intro at 9 / 15 s, MOST WANTED 6's post-race sequence (AI cars gone at 13.3 s, the mode ending at 22.3 s).
 
+## 2026-11-20: the weapons and world-prop sequences
+
+What the two bundle families are (decomp.md "World-object sequences" has the functions):
+- `GAMELOGIC/WEAPONS/*.BNDL` hold `SpikeStripWeapon`s (HP2010 pursuit tech kept in the engine) with their
+  deploy / hit / camera-shake sequences, the strip's `WorldObject` and its behaviours; the `*_PRIMARYWAVES`
+  bundles are their waves. The mode's `WeaponList` (free drive 457359) is set on the local player and is also
+  what roadblock layers name: only strip 955361, in 7 roadblock definitions (free-roam level 5 uses 1871263).
+  The launch sequence (`GetWeaponSpawnTransform`, `ApplyVehicleKick` and camera shake on the local player) is the
+  player's weapon (`FUN_006cad20`, gated by `WEAPONSOK` / event byte +0xf2 and WEAPON_DEFENCE): no offline event
+  was found to allow it, so it stays unplayed. **For W1**: `WeaponsAllowed` / `ResetPlayerWeapons` have no
+  runtime to drive; nothing to call yet.
+- `HAWAII/TRK_UNIT*.BNDL` sequences are world objects' `WCSequenceBehaviour`s and `CollisionSequenceBehaviour`s:
+  road-work boards and rooftop warning lights flashing, the crane's and two animated props' loops, the hydrant's
+  sound on contact, the metal fences' rattle on a car's hit.
+
+Ported: `mw_assets::world_sequence` (behaviour data, `EntityItem` = the six item handlers' data as
+`ItemKind::Entity`; `mwtool props -v` lists the objects and where they stand) and `world_sequences.rs` (runs them
+on props with a body and on body-less placements read from each unit's layers). `world_coronas.rs`: placements
+without a `PropBody` can carry `ObjectBehaviours`; added instances draw again; time-driven coronas of sequence-
+switched behaviours show only while on. `world_sfx.rs`: `WorldSfxRequests` (one-shots at a place).
+`cutscene_spawns::run_spawns` failed validation without traffic (`TrafficModels` missing: every `--no-traffic`
+and test run panicked); now optional.
+
+Verified: `MW_WORLD_SEQ_LOG=1` near the arrow boards (2318.9, 18.7, 2444.0, TRK_UNIT158) and the rooftop lights
+c337d240 (2392.1, 143.4, 2626.5): the loops jump and the items enter / stop; shots in the lights' gap (2–3 s of
+the 5 s loop) show the roof corners dark, in either light's phase lit (`scratch/shots/tower_ab.png`).
+
+Model decisions: time-driven coronas of a switched behaviour gate on its state; the collision contact value is
+the closing speed; a wave item plays its first wave without its gain / pitch / fades.
+Open: animation items drive nothing (no skinned world objects); `FUN_005b7350` (the fences' other two
+sequences); the spike strip (roadblock placement through `FUN_006cb430`, its spawn sequence, the burst rules of
+`FUN_006cf140`; WaveSelect, CameraShake, VfxSpot, VehicleKick have no player of these sequences); whether
+FlashingLight boards' base instances show (the added instance only doubles them). Captures that would confirm:
+the original at night next to the arrow boards and the "Choke Drinks" roof in TRK_UNIT158.
+
+
 ## 2026-11-19: the cars' damage sequences and their locator spot effects (`damage_vfx.rs`)
 
 The 1,672 `VfxLocatorGroupVehicleSpotEffectSequenceItem`s (836 per LOD set, 93 cars) all sit in the cars'
