@@ -11,6 +11,72 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-20: the logic's race / game-mode requests carried out (`logic_race.rs`)
+
+The requests `tools/t --race 462174 --test race` logged "not carried out yet" are now carried out from logic.rs's
+request match through `logic_race.rs` (a child module of logic.rs). Where a hand-written trigger did the same, the
+request is now the trigger. One line each (source → what the runtime does):
+
+- `AddAllAIPlayers` (`FUN_00686f30`): the event's racing `AIPlayerInformation`s take the logic's player slots
+  12.. at once (minus the +0xee slot), unloaded; `ai.rs` builds the grid and requests the cars only now
+  (`RaceDriven::add_ai`; before: on `RaceState`'s insertion); `race.rs` marks a slot loaded once its racer exists, so
+  `AreAllAIPlayersLoaded` waits for the cars and `SetIntroLoadComplete` sets `Mode.HasIntroLoadCompleted` (the
+  `RaceLink` stand-in that set it is gone).
+- `PauseAi` (`PAUSEAI`, G+0x2ef50..5f; read only by the racer state `FUN_0050da90` through `FUN_006a05d0`, which
+  returns before driving): `ai::AiPaused`; AI racers (not the player's car the intro drives, not cops) leave their
+  controls as they were.
+- `GameModeTimer` (`FUN_006f0f80` / `FUN_006f1120`): go. Driven, `race.rs`'s Intro → Racing waits for
+  `RaceDriven::timer` (before: the intro's event trigger / the intro length); `fill_checkpoints` no longer writes
+  GMM+0x2e74 when driven (only plain play). A race start clears it (`FUN_0070b1e0` clears +0x2e74 silently).
+- `ResetVehicleDamage` / `CleanAndRepairVehicle` (message 0x16 → `FUN_0058f060`): the local car's `CarDamage::repair`
+  and `CarGrime` zeroed (wash, physics message 0x12), as the body shop.
+- `ResetProps` (message 0x15 → `FUN_0055a680` case 0x15 → `FUN_00559b50`, `FUN_00559e20`, `FUN_005536f0`, which puts
+  every active pool slot back with `FUN_00553540`): `props::ResetAllProps`, every knocked prop back at once (never
+  removed).
+- `RestartTraffic` (message 7 → `FUN_0060a380` case 7 → offline `FUN_00615020`: the restart flags, +0xa2b4c (the stop
+  flag message 6 sets) = 0): `TrafficControl` reset (every car goes, the runtime's model of the restart, as message
+  0xf) and not stopped.
+- `AdjustScoringDisabled` (scoring manager +0x124; its reader is `FUN_006a75f0`: nothing awarded while > 0):
+  `freeroam::ScoringDisabled`, `score()` awards nothing while it counts.
+- `Respawn { event: 0 }` (`FUN_006c9fb0(0, 0)`: reset pose = the saved pose +0x30, direction = target gate − pose when
+  the DTF has a route, else +0x40; executor `FUN_006d0180`: 0 mph unless GMM+0x2e74 runs, then max(+0x220, speed ×
+  +0x224); placed by `FUN_00647e00` reason 6): `logic_race::respawn_in_place` turns the car where it stands to face
+  `RespawnFacing` / the first gate at that speed, at once (the spot is Resident; `FUN_0064b290` places on residency).
+  Model decision: the saved safe pose is the pose at the request. A first version went through
+  `logic_effects::place_vehicles`, whose own ground test (ours, not the game's) never found collision under the start
+  and held the car there all race (`TEST RESULT race FAILED`).
+- `Respawn` of the free-drive event (`RequestRespawnAtEventStart`, free drive 390703 at boot): the start is where the
+  front end's start-up placement put the car; marked done (model decision: that placement stays hand-written).
+- `StopAllSequences` (`FUN_00a44dd0` on UIM+0x47748 / +0x4774c: every sequence's state = 7): the playbacks on players
+  0 and 1 end.
+- Done with nothing to change (reason): `StartGameMode` (the GMM start is the logic's; message 5 `FUN_00846710` →
+  `FUN_0084ed80`, receiver not traced), `SetEndReason` (GMM+0x2d08, the logic's), `StartPlaying` (`FUN_006fa720`
+  recounts the collectables: `freeroam.rs` at load; no session statistics), `EnterGame` (camera message 0 on
+  `DAT_010edb24` with profile option 11, clamped 0–3: no saved camera choice in the runtime; messages 2 / 4 / 8 on
+  `DAT_010edb38`: receiver not traced), `AdjustTimeEnabled` (G+0x25624: text.asm has only the four inc / dec
+  writers, no reader), `StreamVehicle` / `ReleaseVehicle` (cars' bundles are read when a car is built),
+  `ResetCurrentEventStats` (no statistics managers), `WeaponsAllowed` / `ResetPlayerWeapons` (the player weapon
+  is the spike strip, `SpikeStripWeapon`, gated by `WEAPONSOK` = event byte +0xf2 and WEAPON_DEFENCE: no offline
+  event allows it, the runtime has none: the answer with none equipped), `StartCollectables` (`FUN_0070d260`'s
+  counts / found marks = `freeroam.rs`'s load, done before
+  `Query::CollectablesReady`), `BlacklistStep` (phase 1 `FUN_00748e50` looks at the rival slot PM+0xa698, which only
+  the roaming-rival spawn `FUN_00748a40` (phase 2, not ported) fills; the phase stays).
+
+Results: `--race 462174 --test race --units 12`: 27/27, **218.16 s** (was 225.6 s): go is now the HSM's "Start
+Game Mode Timer", which follows the "Intros" state's exit at the intro playback's end (26.0 s) instead of the intro's
+`EventTriggerSequenceItem` (24.0 s), so the test's scripted car starts from further along. `--race 906146`: 10/10,
+**135.84 s** (was 136.7 s, the same cause). `--drive 911 --test pursuit --units 12`: passes (escape, bust; the
+free roam under the logic). `--test pursuit --no-traffic` panics on master's `cutscene_spawns.rs` (its system takes
+`ResMut<TrafficSystem>`, absent without traffic; not this change). No request of this list is logged "not carried out yet" in the race, free-roam or pursuit runs.
+Seen, not caused here (to check on master): the AI racers spawned during "Pause to Add AI" (sim paused, on their
+grid pose) fall through the world at the start of 462174 (y 50 → −130 by go): the start's collision is not in when
+the sim resumes.
+
+Open: the event `Timeline` sequences and the 900 s timeout `FUN_006f0f80` arms; the roaming blacklist rival
+(`FUN_00748a40`, `FUN_007428b0`, `FUN_00753fa0`); what the paused AI's controls hold in the original; the intro's
+`EventTriggerSequenceItem` (still releases the cutscene's hold; go is now the timer). Captures that would confirm:
+the AI cars' motion between the intro's teleports and go; G+0x2ef50 during the intro.
+
 ## 2026-11-19: the cars' damage sequences and their locator spot effects (`damage_vfx.rs`)
 
 The 1,672 `VfxLocatorGroupVehicleSpotEffectSequenceItem`s (836 per LOD set, 93 cars) all sit in the cars'

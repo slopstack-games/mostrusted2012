@@ -96,6 +96,10 @@ pub struct RacePlugin {
 pub struct RaceDriven {
     /// The logic went back to free drive: [`end_event`] ends the event now.
     pub end: bool,
+    /// The logic's mode timer runs (`GameModeTimer`, `FUN_006f0f80`): go, the race clock starts ([`run_race`]).
+    pub timer: bool,
+    /// The logic added the event's AI players (`AddAllAIPlayers`, `FUN_00686f30`): `ai.rs` builds the grid.
+    pub add_ai: bool,
 }
 
 impl Plugin for RacePlugin {
@@ -830,6 +834,7 @@ fn hold_at_start(race: Res<RaceState>, mut input: ResMut<CarInput>) {
 fn run_race(
     time: Res<Time>,
     loaded: Res<crate::Loaded>,
+    driven: Option<Res<RaceDriven>>,
     mut race: ResMut<RaceState>,
     mut facing: ResMut<RespawnFacing>,
     mut racers: Query<(Entity, &Racer, &mut RacerProgress, &Transform)>,
@@ -852,7 +857,13 @@ fn run_race(
         }
         RacePhase::Intro => {
             race.intro_elapsed += dt;
-            if race.intro_elapsed < race.intro {
+            // Driven by the logic, go is its `StartGameModeTimer` (the race's "Start Game Mode Timer" state);
+            // otherwise the intro's length.
+            let go = match &driven {
+                Some(d) => d.timer,
+                None => race.intro_elapsed >= race.intro,
+            };
+            if !go {
                 return;
             }
             race.clock = 0.0;
@@ -971,6 +982,7 @@ fn fill_checkpoints(
     st: &mut mw_logic::natives::LogicState,
     race: Option<&RaceState>,
     racers: &[CheckpointCar],
+    placed: &[usize],
     values: Option<&mw_assets::frontend::GameLogicValues>,
     dt: f32,
 ) {
@@ -1068,21 +1080,34 @@ fn fill_checkpoints(
         }
     }
     i.racers.sort_unstable();
-    // The AI racers are players with a vehicle (PM slots 12..23).
+    // The AI racers are players with a vehicle (PM slots 12..23): `AddAllAIPlayers` fills the slots (logic.rs,
+    // `logic_race.rs`), a slot's car is loaded once its racer is placed (`FUN_006ba2f0`); a racer that is gone
+    // (removed, `FUN_006ce180`) leaves its slot.
     for slot in FIRST_AI_SLOT..SLOTS {
-        let racing = i.racers.contains(&slot);
+        let racing = placed.contains(&(slot - FIRST_AI_SLOT));
         let entry = &mut st.players.slots[slot];
-        if racing && entry.is_none() {
-            *entry = Some(Player { kind: 2, vehicle: slot as i32, ..Default::default() });
-        } else if !racing {
-            *entry = None;
+        match entry {
+            Some(p) if racing => {
+                p.loaded = true;
+                p.vehicle_alive = true;
+            }
+            None if racing => {
+                *entry = Some(Player {
+                    kind: 2,
+                    vehicle: slot as i32,
+                    loaded: true,
+                    vehicle_alive: true,
+                    ..Default::default()
+                })
+            }
+            Some(p) if !p.loaded => {}
+            _ => *entry = None,
         }
     }
-    // The race clock (GMM+0x2d28 / +0x2d2c, ticks of 1/3,000,000 s) and the mode timer (+0x2e74).
+    // The race clock (GMM+0x2d28 / +0x2d2c, ticks of 1/3,000,000 s).
     let ticks = (f64::from(race.clock) * 3e6) as u64;
     st.game_modes.word_2d28 = ticks as u32;
     st.game_modes.word_2d2c = (ticks >> 32) as u32;
-    st.game_modes.timer_running = race.phase == RacePhase::Racing;
 }
 
 /// A racer as [`fill_checkpoints`] reads it.
@@ -1111,6 +1136,11 @@ type CheckpointRacers<'w, 's> = Query<
     's,
     (Entity, &'static Racer, &'static mut RacerProgress, &'static Transform, Has<crate::car_impacts::AiCrash>),
 >;
+
+/// The AI racers' grid slots whose car is placed (before go too).
+fn placed_ai(racers: &CheckpointRacers) -> Vec<usize> {
+    racers.iter().filter(|(_, r, ..)| !r.player).filter_map(|(_, r, ..)| r.grid_slot).collect()
+}
 
 fn checkpoint_cars(racers: &CheckpointRacers, crash: Option<&crate::crash::CrashState>) -> Vec<CheckpointCar> {
     racers
@@ -1159,7 +1189,10 @@ fn checkpoints_plain(
             st.game_modes.won = true;
             st.game_modes.race_event = race.event.kind.is_race();
         }
-        fill_checkpoints(&mut st, Some(&race), &cars, logic.values.as_ref(), time.delta_secs());
+        let placed = placed_ai(&racers);
+        fill_checkpoints(&mut st, Some(&race), &cars, &placed, logic.values.as_ref(), time.delta_secs());
+        // Plain play: the mode timer (+0x2e74) runs from go (driven, the logic's `StartGameModeTimer` sets it).
+        st.game_modes.timer_running = race.phase == RacePhase::Racing;
     }
     if !race.logic_entered {
         race.logic_entered = true;
@@ -1190,7 +1223,8 @@ fn checkpoints_inputs(
     }
     let cars = checkpoint_cars(&racers, crash.as_deref());
     let mut st = logic.state.borrow_mut();
-    fill_checkpoints(&mut st, race.as_deref(), &cars, logic.values.as_ref(), time.delta_secs());
+    let placed = placed_ai(&racers);
+    fill_checkpoints(&mut st, race.as_deref(), &cars, &placed, logic.values.as_ref(), time.delta_secs());
 }
 
 /// Under `--hsm`: the outcomes after the logic's frame.

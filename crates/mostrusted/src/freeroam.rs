@@ -63,7 +63,7 @@ impl Plugin for FreeroamPlugin {
         if let (Some(path), false) = (&self.profile, self.new_game) {
             state.progress = Progress::load(path);
         }
-        app.insert_resource(state).add_message::<ScoreAction>().add_systems(
+        app.insert_resource(state).init_resource::<ScoringDisabled>().add_message::<ScoreAction>().add_systems(
             Update,
             (load, overlaps, billboards, handle_hits, score_actions, publish, save, billboard_faces).chain(),
         );
@@ -178,7 +178,14 @@ pub struct Collectables {
     profile: Option<PathBuf>,
     dirty: bool,
     since_save: f32,
+    /// [`ScoringDisabled`] above 0 this frame.
+    scoring_disabled: bool,
 }
+
+/// The scoring manager's counter +0x124 (G+0x2f3cc), the logic's `HSB_NOSCORES` (`Request::AdjustScoringDisabled`):
+/// while it is above 0 a scoring action awards nothing (`FUN_006a75f0` skips `FUN_006d08a0` and the message).
+#[derive(Resource, Default)]
+pub struct ScoringDisabled(pub i32);
 
 impl Collectables {
     pub fn total(&self, kind: Collectable) -> usize {
@@ -534,8 +541,10 @@ fn handle_hits(
     time: Res<Time>,
     cars: Query<&Car, With<Player>>,
     race: Option<Res<crate::race::RaceState>>,
+    disabled: Option<Res<ScoringDisabled>>,
 ) {
     let state = &mut *state;
+    state.scoring_disabled = disabled.is_some_and(|d| d.0 > 0);
     let mph = cars.single().ok().map(|c| c.speed.abs() * MPH);
     // The gate's scoring events need the free-roam flag (game mode +0x2e90).
     let free_roam = race.is_none();
@@ -570,8 +579,10 @@ fn score_actions(
     mut hud: ResMut<crate::hud::HudState>,
     time: Res<Time>,
     mut actions: MessageReader<ScoreAction>,
+    disabled: Option<Res<ScoringDisabled>>,
 ) {
     let state = &mut *state;
+    state.scoring_disabled = disabled.is_some_and(|d| d.0 > 0);
     for ScoreAction(field) in actions.read().copied() {
         let Some(a) = state.scoring.by_field(field).cloned() else { continue };
         let sp = score(state, &mut hud.freeroam, &a, time.elapsed_secs_f64());
@@ -661,6 +672,10 @@ fn handle(
 /// Model decision: an action's `GameplayTrigger` is taken to fire its output sequences whenever the action
 /// scores (the trigger's inputs and conditions were not traced).
 fn score(state: &mut Collectables, hud: &mut FreeroamHud, a: &ScoringAction, now: f64) -> u32 {
+    // `FUN_006a75f0`: nothing while the scoring manager's counter +0x124 is above 0.
+    if state.scoring_disabled {
+        return 0;
+    }
     let sp = a.sp();
     if sp > 0 {
         state.progress.speed_points += sp as u64;
