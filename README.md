@@ -157,6 +157,9 @@ Done:
 - [x] Front end: title, loading, pause menu, Easydrive, the map screen (event selection) and event-loading card
 - [x] Traffic and parked cars, AI racers, races (gates, laps, results), speed cameras, billboards, gates, jack
   spots, body shops, a first playable pursuit
+- [~] Game logic run by ports of the original's interpreters: the HSM state machines, binding paths and the UI's Lua
+  scripts with their natives; races, free roam and the front end follow the logic's requests (2026-11-20). Sequences
+  with their timeline controllers, PostFX states, intro spawns, damage effects and world-object sequences (2026-11-20)
 
 Still missing or not like the original (user play tests, 2026-10-14 to 2026-10-19; details in
 [docs/next-session.md](docs/next-session.md)):
