@@ -402,6 +402,7 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                     c.release
                 ),
                 ItemKind::Gameplay { data, trigger_type } => format!("gameplay switch {trigger_type} data {data}"),
+                ItemKind::Speech(events) => format!("speech events {events:?}"),
                 ItemKind::AnimatedTraffic(a) => {
                     format!(
                         "animated traffic car {} ({} frames, first key {:?})",

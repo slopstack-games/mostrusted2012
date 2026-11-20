@@ -22,8 +22,12 @@
 //! - **`SpawnDynamicEntitySequenceItem`**: from 2 s before the start the world object is ordered from the loader
 //!   (`FUN_008534f0`, world message 0), in range it stands on its `AnimatedDynamicEntityBehaviour` clip
 //!   (`FUN_00855520`, message 8), the stop removes it (`FUN_008503e0`, message 3).
+//! - **`SpeechEventSequenceItem`** (enter 0x00834710): the first of its speech events whose conditions hold is
+//!   requested from the speech manager (`police_speech.rs` [`crate::police_speech::SpeechCore::request_first`]).
 //! - **`SpawnTrafficSequenceItem`**: a lane traffic car at the first trigger (`FUN_00853660` → traffic message 0x15,
 //!   [`crate::traffic::TrafficSystem::spawn_sequence_car`]).
+//!
+//! Every item waits for its `EnabledBinding` (the item loop `FUN_00a42b90`; read through the logic's bindings).
 //!
 //! Model decisions (marked MODEL below): cars for these items are loaded from the sequence's start (the loader
 //! needs time; the game streams them from the lead time on); an `AddRaceCar` whose binding names a racer moves that
@@ -78,6 +82,8 @@ struct ItemState {
     owned: bool,
     entered: bool,
     stopped: bool,
+    /// The `EnabledBinding`'s cached value (binding modes 2 / 3).
+    gate: Option<bool>,
 }
 
 /// A playing sequence whose items run here.
@@ -125,7 +131,11 @@ fn role_of(command: u8) -> (Role, CopMode) {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn run_spawns(
     mut commands: Commands,
-    (cutscene, timeline): (Res<CutsceneState>, Option<Res<crate::event_timeline::EventTimeline>>),
+    (cutscene, timeline, speech): (
+        Res<CutsceneState>,
+        Option<Res<crate::event_timeline::EventTimeline>>,
+        Option<Res<crate::police_speech::SpeechLink>>,
+    ),
     mut spawns: ResMut<Spawns>,
     mut opponents: ResMut<crate::ai::Opponents>,
     requests: Option<Res<LoaderRequests>>,
@@ -206,6 +216,31 @@ fn run_spawns(
             let state = track.items.entry(index).or_default();
             if state.stopped {
                 continue;
+            }
+            // `FUN_00a42b90`: an item whose `EnabledBinding` does not hold is neither prepared nor entered (mode 3:
+            // read once; 2: once per stay in range; else every frame). Read through the logic's bindings; without
+            // the logic (`--no-hsm`) it holds (MODEL). An item already started is not stopped by its binding here
+            // (MODEL: the original's every-frame modes would exit it).
+            let started = state.entered || state.slot.is_some() || state.entity.is_some() || state.racer.is_some();
+            if !item.enabled.is_empty() && !started && carried_here(&item.kind) {
+                let holds = match state.gate {
+                    Some(v) if matches!(item.binding_mode, 2 | 3) => v,
+                    _ => {
+                        let v =
+                            logic.as_deref().is_none_or(|l| l.state.borrow().resolve_bool(&item.enabled) == Some(true));
+                        if state.gate != Some(v) {
+                            info!(
+                                "cutscene: item {index} binding {:?} (mode {}): {v}",
+                                item.enabled, item.binding_mode
+                            );
+                        }
+                        state.gate = Some(v);
+                        v
+                    }
+                };
+                if !holds {
+                    continue;
+                }
             }
             match &item.kind {
                 ItemKind::AddRaceCar(c) => {
@@ -416,6 +451,12 @@ fn run_spawns(
                         state.stopped = true;
                     }
                 }
+                ItemKind::Speech(events) if in_range && !state.entered => {
+                    // 0x00834710: the first event whose conditions hold, when the speech manager is loaded.
+                    state.entered = true;
+                    let queued = speech.as_deref().is_some_and(|l| l.0.lock().unwrap().request_first(events));
+                    info!("cutscene: SpeechEventSequenceItem {index} {events:?} at {t:.2} s: queued {queued}");
+                }
                 ItemKind::SpawnTraffic(s) if in_range && !state.entered => {
                     // `FUN_00853660`: the first trigger's point (every item in the data uses one trigger; the other
                     // branches, the first `Position` entry or `PositionBinding`, are unused) → traffic message 0x15.
@@ -469,6 +510,22 @@ fn run_spawns(
         }
         info!("cutscene: GameplaySequenceItem 12: {n} AI cars of type {ty} released");
     }
+}
+
+/// The item kinds this module carries out (the others are other players' and their bindings theirs).
+fn carried_here(kind: &ItemKind) -> bool {
+    matches!(
+        kind,
+        ItemKind::AddRaceCar(_)
+            | ItemKind::SpawnCop(_)
+            | ItemKind::AnimatedTraffic(_)
+            | ItemKind::OverrideTraffic(_)
+            | ItemKind::PlayerDamage(_)
+            | ItemKind::Gameplay { .. }
+            | ItemKind::DynamicEntity(_)
+            | ItemKind::SpawnTraffic(_)
+            | ItemKind::Speech(_)
+    )
 }
 
 /// What a `GameplaySequenceItem`'s enter reaches.

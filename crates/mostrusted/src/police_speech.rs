@@ -131,7 +131,7 @@ pub struct SpeechCore {
     pub failed: bool,
     pub facts: SpeechFacts,
     /// Gameplay triggers waiting for the manager: the event list and why.
-    triggers: Vec<(&'static [u32], &'static str)>,
+    triggers: Vec<(std::borrow::Cow<'static, [u32]>, &'static str)>,
     /// What the manager said, for [`play`].
     out: Vec<SpeechOut>,
     /// The logic stepped the manager this frame.
@@ -203,6 +203,19 @@ impl SpeechCore {
         if let Some(m) = self.manager.as_mut() {
             m.stop();
         }
+    }
+
+    /// `SpeechEventSequenceItem`'s enter (0x00834710): with the manager loaded (its state G+0x2ebc8 above 6), the
+    /// first of `events` whose conditions hold (`FUN_0083d1e0`, the event's vtable +0x34) is requested
+    /// (`FUN_008406a0`(event, the item's +0x1c, −1, −1, 0)); queued for this frame's [`Self::step`]. False when the
+    /// manager is not loaded (the item does nothing then). MODEL: `force` (+0x1c, set by 0x00831930 for an entry
+    /// of the type at `.bss` 0x011816fc, not resolved) is false.
+    pub fn request_first(&mut self, events: &[u32]) -> bool {
+        if self.manager.is_none() {
+            return false;
+        }
+        self.triggers.push((events.to_vec().into(), "sequence item"));
+        true
     }
 
     /// The queued triggers (each: the first event whose conditions hold, `FUN_006e0a90`), then one manager frame.
@@ -331,19 +344,19 @@ fn triggers(
     let t = &mut core.triggers;
     if was != now.0 {
         match now.0 {
-            PursuitState::Chase if was == PursuitState::Cooldown => t.push((CHASE_RESUMED, "chase resumed")),
-            PursuitState::Chase => t.push((CHASE_STARTED, "chase started")),
-            PursuitState::Cooldown => t.push((COOLDOWN_STARTED, "cooldown")),
-            PursuitState::Escaped => t.push((ESCAPED, "escaped")),
-            PursuitState::Busted => t.push((BUSTED, "busted")),
+            PursuitState::Chase if was == PursuitState::Cooldown => t.push((CHASE_RESUMED.into(), "chase resumed")),
+            PursuitState::Chase => t.push((CHASE_STARTED.into(), "chase started")),
+            PursuitState::Cooldown => t.push((COOLDOWN_STARTED.into(), "cooldown")),
+            PursuitState::Escaped => t.push((ESCAPED.into(), "escaped")),
+            PursuitState::Busted => t.push((BUSTED.into(), "busted")),
             PursuitState::None => {}
         }
     } else if now.1 > level && (1..=6).contains(&now.1) {
-        t.push((HEAT_UP[now.1 as usize - 1], "heat level up"));
+        t.push((HEAT_UP[now.1 as usize - 1].into(), "heat level up"));
     }
     if now.0 == PursuitState::Chase && !taken_down.is_empty() {
         let list = if police.pursuit.chase_time <= 2.0 { TAKEDOWN_EARLY } else { TAKEDOWN };
-        t.push((list, "cop taken down"));
+        t.push((list.into(), "cop taken down"));
     }
 }
 

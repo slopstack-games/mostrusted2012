@@ -32,6 +32,27 @@ Open: the speech items (`SpeechEventSequenceItem`, not parsed); the ambush mode 
 its Timeline (heat 0xe, cops) is not reached; who starts the `SpawnTraffic` sequences of 1119746 (not a Timeline);
 police in `--race` runs (the stand-in `WasBusted` false).
 
+## 2026-11-20: speech sequence items and the items' `EnabledBinding` (`cutscene_spawns.rs`)
+
+- **`SpeechEventSequenceItem`**: registered at 0x008560f3 (type id from 0x00830df0 = 0x84a38), factory 0x00860b20,
+  vtable 0x00ff1c70 (lead 0x00830de0 = 0, prepare 0x00830da0 = true, enter 0x00834710, update 0x00831130 = the base,
+  stop 0x00830dc0, slot +0x1c 0x00831930). Enter: when the speech manager's state (G+0x2c3c0 +0x2808 = G+0x2ebc8) is
+  above 6 (loaded), each id of `8239ac66` (+0x24, count `137c3c78` +0x28) is looked up (`FUN_0083d1e0`) and the first
+  whose conditions hold (event vtable +0x34) is requested (`FUN_008406a0`(event, item +0x1c, −1, −1, 0)). +0x1c is set
+  by 0x00831930 when an entry of the list it is handed has the type at `.bss` 0x011816fc (not resolved: MODEL false).
+  Parsed as `ItemKind::Speech`, carried out through `SpeechCore::request_first`. 39 items in 29 sequences (the MOST
+  WANTED races' outros 1689477..1689533, the ambushes' Timelines, ...).
+- **`EnabledBinding`** of every item: the item loop `FUN_00a42b90` evaluates the item's compiled binding (+0x10) with
+  `FUN_00a4f160` before prepare / enter; `84531672` (+0x20) is the mode: 3 once (state bits 2 / 3), 2 once per stay in
+  range (bits 4 / 5, cleared at the exit), others every frame; false keeps the item out (state 0, 5 for mode 2).
+  `cutscene_spawns.rs` ignored it; it now gates its kinds through the logic's bindings (`Item::binding_mode`).
+  Checked: `--race 1399902`: the outro's speech item (`Mode.BlacklistEventsWon(EQUALS:1)`, mode 2) stays out (our
+  progression never counts a Most Wanted win: the progression DB again); 15/15 158.72 s. 857703 (TURF WAR) 24/24 98.77 s,
+  its intro entities as before; 462174 27/27 218.16 s.
+- Open: `cutscene.rs`'s own items (cameras, teleports, letterbox, ...) do not read their binding (12 of ~2,060 have
+  one: `Players.LocalPlayer.CanDriveAway(NOT)`, `GetPlayerSpeed(...)`, `Players.PlayerBase[#].LocalPlayer`); an item
+  already started is not exited by an every-frame binding turning false.
+
 ## 2026-11-20: three open logic items surveyed (no code): post-event awards, `WasBusted`, feedback message sounds
 
 - **`PreparePostEventAwards`** (`FUN_006fbb60`): the previous best place GMM+0x2ca2 (i8, −1 none) is not written
