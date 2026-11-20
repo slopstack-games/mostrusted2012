@@ -25,6 +25,7 @@ pub mod engine_sound;
 pub mod environment;
 pub mod events;
 pub mod frontend;
+pub mod gameplay_triggers;
 pub mod handling;
 pub mod lights;
 pub mod mods;

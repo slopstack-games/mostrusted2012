@@ -67,6 +67,8 @@ pub struct LogicState {
     pub profile_io: super::game_logic_view::ProfileIo,
     /// `CHECKPTS`'s checkpoint manager (`checkpoints.rs`): runtime inputs and the logic's progress.
     pub checkpoints: super::checkpoints::Checkpoints,
+    /// The event's gameplay triggers (`gameplay_triggers.rs`, G+0x2f408).
+    pub gameplay_triggers: super::gameplay_triggers::GameplayTriggers,
     /// `EVENTSTARTS`'s event-start markers (`event_starts.rs`).
     pub event_starts: super::event_starts::EventStarts,
     /// `HSMCARSWAPLO`'s jack spots and swap (`car_swap.rs`).

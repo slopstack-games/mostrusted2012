@@ -1121,7 +1121,7 @@ struct CheckpointCar {
 
 /// The racer's box as the overlap job queries it (`FUN_00536a10`): centred half its height above the origin (model
 /// decision, as before).
-fn car_box(t: &Transform, half: Vec3) -> mw_logic::natives::trigger_boxes::CarBox {
+pub(crate) fn car_box(t: &Transform, half: Vec3) -> mw_logic::natives::trigger_boxes::CarBox {
     let axes = [t.rotation * Vec3::X, t.rotation * Vec3::Y, t.rotation * Vec3::Z];
     mw_logic::natives::trigger_boxes::CarBox {
         centre: (t.translation + axes[1] * half.y).to_array(),

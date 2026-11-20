@@ -34,6 +34,7 @@ pub mod feedback_queue;
 pub mod game_logic;
 pub mod game_logic_view;
 pub mod game_modes;
+pub mod gameplay_triggers;
 pub mod hook_args;
 pub mod hooks_event;
 pub mod hooks_flow;

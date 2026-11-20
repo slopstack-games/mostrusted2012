@@ -372,6 +372,9 @@ pub struct Event {
     /// `Timeline` (+0xa0, count +0xe6): `Sequence` UniqueIds (in the event's feedback groups) the mode timer starts
     /// (`FUN_006f0f80`) and the event change / reset stop (`FUN_006e6440`): forced heat levels, cops, PostFX.
     pub timeline: Vec<u32>,
+    /// `a9d6149c` (+0x7c, count +0xf5): the event's `GameplayTrigger`s (`mw_assets::gameplay_triggers`), active
+    /// from its start (`FUN_006f58b0` in `FUN_0070caa0`).
+    pub gameplay_triggers: Vec<u32>,
 }
 
 impl Event {
@@ -687,6 +690,7 @@ impl AssetStore {
                         intro_message_group: uint(o.get(h::INTRO_MESSAGE_GROUP)),
                         heat_levels: uints(o.get(0xab4e_53fd)),
                         timeline: uints(o.get(h::TIMELINE)),
+                        gameplay_triggers: uints(o.get(0xa9d6_149c)),
                     });
                 }
                 _ => {}

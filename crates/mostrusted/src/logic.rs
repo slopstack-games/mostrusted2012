@@ -321,6 +321,7 @@ fn receive(world: &mut World) {
                     .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
                 // `WAYPOINTS`: the checkpoints' ground points (`natives::pois`).
                 timeline: e.timeline.clone(),
+                gameplay_triggers: e.gameplay_triggers.clone(),
                 waypoints: e
                     .checkpoints
                     .iter()
