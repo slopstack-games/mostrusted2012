@@ -48,7 +48,7 @@ pub struct ObjectFx {
 }
 
 impl ObjectFx {
-    fn read(store: &mw_assets::AssetStore, def: &mw_formats::ObjectDef) -> Self {
+    pub fn read(store: &mw_assets::AssetStore, def: &mw_formats::ObjectDef) -> Self {
         let mut behaviours: Vec<(ResourceId, String, bool)> = Vec::new();
         let own = store.wc_vfx(&def.behaviours, &[], &def.locator_groups);
         let parts = def.compound_parts.iter().flat_map(|p| store.wc_vfx(&p.behaviours, &[], &[]));
@@ -77,6 +77,12 @@ pub struct ObjectBehaviours {
     pub fx: Arc<ObjectFx>,
     /// Per `fx.behaviours` entry: switched on (from `543527d0`, then by sequences and the traffic lights' cycle).
     pub on: Vec<bool>,
+    /// Per `fx.behaviours` entry: a sequence switches it (`world_sequences.rs`), so its time-driven coronas too
+    /// show only while it is on (MODEL, see that module).
+    pub gated: Vec<bool>,
+    /// Per `fx.behaviours` entry: further instances a sequence's `AddBehaviourSequenceItem` added (each draws
+    /// the behaviour's coronas once more while its time window holds).
+    pub extra: Vec<u8>,
     /// The lamp's stagger id (its light's, `WorldLight::stagger`), once found.
     stagger: Option<u16>,
     stagger_tries: u16,
@@ -98,6 +104,22 @@ fn release_added(mut world: bevy::ecs::world::DeferredWorld, ctx: bevy::ecs::lif
 }
 
 impl ObjectBehaviours {
+    /// An object's behaviours in their start state (`543527d0`).
+    pub fn new(object: ResourceId, fx: Arc<ObjectFx>) -> Self {
+        let n = fx.behaviours.len();
+        let on = fx.behaviours.iter().map(|b| b.2).collect();
+        Self {
+            object,
+            fx,
+            on,
+            gated: vec![false; n],
+            extra: vec![0; n],
+            stagger: None,
+            stagger_tries: 0,
+            added: Vec::new(),
+        }
+    }
+
     pub fn is_on(&self, behaviour: ResourceId) -> bool {
         self.fx.behaviours.iter().position(|b| b.0 == behaviour).is_some_and(|i| self.on[i])
     }
@@ -172,15 +194,7 @@ fn attach(
         let object = prop.physics.object;
         match cache.done.get(&object) {
             Some(Some(fx)) => {
-                let on = fx.behaviours.iter().map(|b| b.2).collect();
-                commands.entity(e).insert(ObjectBehaviours {
-                    object,
-                    fx: fx.clone(),
-                    on,
-                    stagger: None,
-                    stagger_tries: 0,
-                    added: Vec::new(),
-                });
+                commands.entity(e).insert(ObjectBehaviours::new(object, fx.clone()));
             }
             Some(None) => {
                 commands.entity(e).insert(NoBehaviours);
@@ -239,7 +253,7 @@ fn queue_coronas(
     state: Option<Res<crate::weather::EnvironmentState>>,
     sources: Res<LightSources>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
-    mut objects: Query<(&GlobalTransform, &PropBody, &mut ObjectBehaviours, Option<&Compound>)>,
+    mut objects: Query<(&GlobalTransform, Option<&PropBody>, &mut ObjectBehaviours, Option<&Compound>)>,
     world: Option<ResMut<WorldCoronas>>,
     mut staggers: Local<(usize, HashMap<ResourceId, Vec<(Vec3, u16)>>)>,
     mut timing: Local<(u32, f32, u32)>,
@@ -282,8 +296,8 @@ fn queue_coronas(
         // The lamp's stagger: its light's (the light arrives with the same track unit, maybe a little later).
         if b.stagger.is_none() && b.stagger_tries < 600 {
             b.stagger_tries += 1;
-            let r = prop.physics.radius + 2.0;
-            let home = prop.home.translation;
+            let r = prop.map_or(2.0, |p| p.physics.radius + 2.0);
+            let home = prop.map_or(pos, |p| p.home.translation);
             b.stagger =
                 staggers.1.get(&b.object).and_then(|v| v.iter().find(|(p, _)| p.distance(home) <= r)).map(|&(_, s)| s);
         }
@@ -293,19 +307,23 @@ fn queue_coronas(
                 continue;
             }
             // Off while knocked loose (MODEL, as `prop_vfx.rs` does for the lights).
-            if c.off_by_contact && !prop.pinned {
+            if c.off_by_contact && prop.is_some_and(|p| !p.pinned) {
                 continue;
             }
-            let shown =
-                if c.by_time() { c.flags & mask != 0 && in_hours(c.hours, hour_byte) } else { b.is_on(c.behaviour) };
-            if !shown {
+            let i = b.fx.behaviours.iter().position(|x| x.0 == c.behaviour);
+            let gated = i.is_some_and(|i| b.gated[i]);
+            let timed = c.flags & mask != 0 && in_hours(c.hours, hour_byte);
+            let shown = if c.by_time() && !gated { timed } else { b.is_on(c.behaviour) && (!c.by_time() || timed) };
+            // Instances a sequence added draw once more each (time-driven ones while their window holds).
+            let copies = usize::from(shown) + i.map_or(0, |i| b.extra[i] as usize) * usize::from(timed || !c.by_time());
+            if copies == 0 {
                 continue;
             }
             let level = phase.switch_level(c.flags & 4 != 0, c.flags & 1 != 0, b.stagger);
             if level < 0.001 {
                 continue;
             }
-            for (def, locators) in &c.entries {
+            for (def, locators) in c.entries.iter().cycle().take(c.entries.len() * copies) {
                 for l in locators {
                     let q = Quat::from_array(l.rotation);
                     world.items.push(WorldCorona {

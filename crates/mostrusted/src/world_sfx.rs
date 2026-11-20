@@ -65,9 +65,9 @@ pub struct WorldSfxPlugin;
 
 impl Plugin for WorldSfxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WorldSfxState>().add_systems(
+        app.init_resource::<WorldSfxState>().init_resource::<WorldSfxRequests>().add_systems(
             Update,
-            (load, objects, landings, crash_contacts, hud_waves, follow, meter)
+            (load, objects, landings, crash_contacts, hud_waves, requested, follow, meter)
                 .chain()
                 .after(crate::car_audio::update_listener),
         );
@@ -906,6 +906,25 @@ fn hud_waves(
         }
     }
     state.hud_clock = seen;
+}
+
+/// One-shots other modules start at a place (`world_sequences.rs`: the wave items of world objects' sequences):
+/// (sound, where, kind for the log).
+#[derive(Resource, Default)]
+pub struct WorldSfxRequests(pub Vec<(Arc<OneShot>, Vec3, &'static str)>);
+
+fn requested(
+    mut commands: Commands,
+    listener: Res<Listener>,
+    settings: Option<Res<crate::settings::AudioSettings>>,
+    mut assets: ResMut<Assets<SpatialAudio>>,
+    mut state: ResMut<WorldSfxState>,
+    mut requests: ResMut<WorldSfxRequests>,
+) {
+    let vol = volume(&settings);
+    for (shot, at, kind) in std::mem::take(&mut requests.0) {
+        play(&mut commands, &mut assets, &listener, vol, &mut state, &shot, kind, at, &[]);
+    }
 }
 
 /// Every frame: the voices are placed against the listener.

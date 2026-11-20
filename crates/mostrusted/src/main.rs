@@ -112,6 +112,7 @@ mod window_test;
 mod world_coronas;
 mod world_lights;
 mod world_logic;
+mod world_sequences;
 mod world_sfx;
 mod world_ui;
 mod zone_view;
@@ -1182,6 +1183,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         .add_plugins(coronas::CoronasPlugin)
         .add_plugins((
             world_coronas::WorldCoronasPlugin,
+            world_sequences::WorldSequencesPlugin,
             sequence_fx::SequenceFxPlugin,
             sequence_picture::SequencePicturePlugin,
             traffic_lamps::TrafficLampsPlugin,
@@ -1487,6 +1489,9 @@ fn receive_assets(
                 residency.set_zones(zones);
             }
             Msg::UnitLoaded(unit) => {
+                commands.queue(move |w: &mut World| {
+                    w.resource_mut::<world_sequences::WorldSequenceUnits>().0.push((unit, true))
+                });
                 registry.begin_unit(None);
                 streamed.unit_loaded(unit);
                 zone_view.unit_loaded(unit);
@@ -1500,6 +1505,9 @@ fn receive_assets(
                 streaming::unloaded(*u, &mut registry, &mut loaded);
                 commands.queue(move |world: &mut World| {
                     world.resource_mut::<world_lights::LightSources>().remove_unit(unit)
+                });
+                commands.queue(move |w: &mut World| {
+                    w.resource_mut::<world_sequences::WorldSequenceUnits>().0.push((unit, false))
                 });
             }
             Msg::Streaming => {

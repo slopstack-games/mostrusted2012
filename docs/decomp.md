@@ -2739,6 +2739,49 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
   race cars' (`props::PropCarContact`, from `prop_contacts`) and avian's with other props and traffic. Model
   decisions in the module docs and the research log (2026-10-16).
 
+### World-object sequences (2026-11-20; ported in `mw_assets::world_sequence`, played by `world_sequences.rs`)
+
+- **What carries them**: `WCSequenceBehaviour` (type 0x3f412; handler 0x00faa9cc, runtime `FUN_005b0610`, vtable
+  0x00faf3f4): `Label`, the base bools +0x18 / +0x19 / +0x1a, +0x1c `Sequence`, +0x24 `0ad467f1` (animated: a
+  60-bone identity palette after the runtime, the object told through its vtable +0x20). Slot 1 `FUN_005b7190`
+  starts the sequence with a context: "EntitySequenceItemParam" (`FUN_00861820`: the object, the palette) and the
+  object's id (vtable 0x00faf3c8); state +0x6c = 2. Slot 6 `0x005a79f0` ticks it (`FUN_00a45220`) while 2; slot 2
+  `FUN_005a79c0` stops it (state 3). Slot 8 `0x005a79e0` (pair contact) → on when +0x18; slot 9 `0x005b8810` (world
+  contact) → on by +0x18, off by +0x19. Track-unit users (`mwtool props -v`): road-work arrow boards 408dc998 /
+  6b1ef56d (AddBehaviour flashers, 1.3 s loop), warning lights c337d240 / 21ad6742 (BehaviourEnabled
+  "FlashingLight_0[12][ab]", JumpNTimes 5 s loop), the hydrant e7ce9473 (on by contact: an 8.5 s wave), animated
+  objects 60c5b2d3 (35 s clip + waves) and f54a7228 (AddBehaviour + wave), the crane sound a9352f98.
+- **`CollisionSequenceBehaviour`** (0x7357e; runtime `FUN_005a9170`, vtable 0x00faed94): +0x1c `26b1191f`, +0x24
+  `cbe0bd7b`, +0x2c `Vehicle_Hit`. Pair contact `FUN_005b8620`: when −(the object's velocity · `.rdata`
+  0x00fae850) < 6 (`.bss` 0x0110d580), |contact value| ≥ 5 (0x0110e010), timer +0x20 ≥ 0.6 s (0x0110df60) and
+  the other body is a vehicle (`FUN_00573360`): on, and `Vehicle_Hit` plays (`FUN_005b5480`); otherwise
+  `FUN_005b7350` (the other two; not read). Values from snap2. Users: the metal fence compounds (15 definitions).
+- **Items acting on the owner** (vtables in `scratch/seq_vtables.txt`): `AddBehaviourSequenceItem` enter
+  `0x00533880` = `FUN_005be520` (a new runtime instance of the behaviour through its type's handler,
+  `FUN_005be3b0`) then on (`FUN_005be090` → manager +4); stop `FUN_00532150` off (+8) and remove (+0x10).
+  `BehaviourEnabledSequenceItem`: init `0x00539660` hashes `Label`; enter `0x00532180` / stop `0x00532190` switch
+  the owner's behaviours of that label on / off. `BehaviourEnabledSequenceItemGameplay`: init `0x00850fb0`, enter
+  `FUN_00854150` entity message 4 (on) with the bound entity id and the label hash (`FUN_0084c5a0`), stop
+  `0x00854190` message 6 (off) only with `856325e8`. `AnimationSequenceItem`: lead 1 s, enter state 3, update
+  `0x008620a0` samples the clip into the palette (`FUN_009ef7d0`…`FUN_009f2280`). `ApplyVehicleKickSequenceItem`:
+  `FUN_008540d0` car message 0x1d with `405a1f8d` / `c07d2638` splatted. `WaveSelectSequenceItem` (vtable
+  0x00fef518): prepare `FUN_00836ea0` picks one id of `09768ebb` and one of `5512994f` with the sequence RNG
+  (×0x5851f42d4c957f2d) and loads them as waves (`FUN_00adaf70` type 0xb), then plays as a wave item.
+- **The weapons** (`GAMELOGIC/WEAPONS`): `SpikeStripWeapon`s (type 0x6cbed; +0x30 `ad227478` deploy sequence,
+  +0x38 `a23728e1` camera-shake sequence, +0x40 `RechargeData`, +0x48 `WorldComponent` (the strip's
+  `WorldObject` 0x77f1cf4e, with "Show", "Animation_Idle/Expand/ExpandUpgraded", "Friendly", "Hostile"
+  behaviours), +0xc0 `f529891e` hit sequence, +0xc8 a `RaceCarHandlingDisruptionEffect`, +0xd0 `Surface`). The
+  game mode's `WeaponList` (free drive: 457359 = 406622, 955361, 1556956) is the local player's (`FUN_006bb720`)
+  and also what roadblock layers name (`FUN_006c4610`: only 955361 is used, in 7 definitions, among them
+  free-roam level 5's 1871263). Two users: (1) **the player's weapon** (player weapon state, `FUN_006cad20` /
+  `FUN_006cbc20` / `FUN_006cc260`: plays weapon +0x38 or +0x30 with a context of the player index, the local-player
+  flag `FUN_00861b20`, the player's car `FUN_006a1070`; the deploy sequence's `GetWeaponSpawnTransform`,
+  `ApplyVehicleKick` and the local camera shake belong here); gated by `WEAPONSOK` (event byte +0xf2) and the
+  WEAPON_DEFENCE input; no offline event was found to allow it. (2) **a placed strip** (`FUN_006cb430` /
+  `FUN_006cb5e0` spawn a dynamic entity of kind 2 at a transform; `FUN_006cf140` its contact test: each car's four
+  wheels against the strip (`FUN_006c4250`), a tyre burst (`FUN_00844460`), then weapon +0xc0 (the hit sequence)
+  through `FUN_006cad20`). Not followed: which sequence the placed strip plays at its spawn, the burst rules.
+
 ### Port and model decisions (`props.rs`)
 - Knocked props are outside the race cars' avian layers; `prop_contacts` solves car–prop contacts with the
   scales above in two passes per step (the island's two sub-steps), normal impulses clamped at 0 and friction

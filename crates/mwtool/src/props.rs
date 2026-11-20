@@ -21,12 +21,17 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
     // Placements per object definition, and a debug name for its model where a bundle has one.
     let mut uses: HashMap<(ResourceId, ObjectKind), (usize, ResourceId)> = HashMap::new();
     let mut model_names: HashMap<ResourceId, String> = HashMap::new();
+    // Where each object definition is first placed (the sequence objects' lines name it).
+    let mut first_at: HashMap<ResourceId, (String, [f32; 3])> = HashMap::new();
     for name in &names {
         let Some(b) = store.bundle(name) else { continue };
         let layers = store.bundle_layers(&b)?;
         for p in layers.props.iter().chain(&layers.compounds).chain(&layers.dynamics) {
             let Some(obj) = p.object else { continue };
             uses.entry(obj).or_insert((0, p.model)).0 += 1;
+            first_at
+                .entry(obj.0)
+                .or_insert_with(|| (name.clone(), [p.transform[3][0], p.transform[3][1], p.transform[3][2]]));
             if let Some(n) = b.debug_name(p.model) {
                 model_names.entry(p.model).or_insert_with(|| n.to_string());
             }
@@ -71,6 +76,20 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
             s.no_physics += count;
             if verbose {
                 println!("{kind:?} {id} x{count} model {model}: no physical definition");
+                if let Ok(d) = store.object_def(*id, *kind) {
+                    for q in &store.object_sequences(&d).sequences {
+                        println!(
+                            "   sequence behaviour {:?} {}: sequence {:?}, at start {}, on by contact {}, animated {}; first placed {:?}",
+                            q.label,
+                            q.object,
+                            q.sequence,
+                            q.at_start,
+                            q.on_by_contact,
+                            q.animated,
+                            first_at.get(id)
+                        );
+                    }
+                }
             }
             continue;
         };
@@ -120,6 +139,29 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
             }
             print_vfx("   ", &phys.vfx);
             print_sounds("   ", &phys.sounds);
+            if let Ok(d) = store.object_def(*id, *kind) {
+                let seqs = store.object_sequences(&d);
+                for q in &seqs.sequences {
+                    println!(
+                        "   sequence behaviour {:?} {} part {:?}: sequence {:?}, at start {}, on by contact {}, off by contact {}, animated {}; first placed {:?}",
+                        q.label,
+                        q.object,
+                        q.part,
+                        q.sequence,
+                        q.at_start,
+                        q.on_by_contact,
+                        q.off_by_contact,
+                        q.animated,
+                        first_at.get(id)
+                    );
+                }
+                for c in &seqs.collisions {
+                    println!(
+                        "   collision sequences {} part {:?}: vehicle hit {:?}, other {:?}",
+                        c.object, c.part, c.vehicle_hit, c.other
+                    );
+                }
+            }
             if let Some(c) = &phys.compound {
                 println!("   compound: enabled at start {}, joints {:?}", c.enabled_at_start, c.joints);
                 // The model's triangles per skeleton bone (a triangle belongs to the bone of its first vertex's

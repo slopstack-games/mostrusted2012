@@ -669,6 +669,8 @@ pub enum ItemKind {
     DynamicEntity(Box<DynamicEntity>),
     /// `SetPlayerDamageSequenceItem` ([`PlayerDamage`]).
     PlayerDamage(PlayerDamage),
+    /// The items that act on the world object playing the sequence (`crate::world_sequence`).
+    Entity(crate::world_sequence::EntityItem),
     /// Audio, post-processing, speech, music and the other item types not ported (type name).
     Other(String),
 }
@@ -869,6 +871,7 @@ impl Sequence {
                 ItemKind::SpawnTraffic(_) => "SpawnTraffic".into(),
                 ItemKind::DynamicEntity(_) => "DynamicEntity".into(),
                 ItemKind::PlayerDamage(_) => "PlayerDamage".into(),
+                ItemKind::Entity(e) => e.name().into(),
                 ItemKind::Other(n) => n.clone(),
             };
             match counts.iter_mut().find(|(n, _)| *n == name) {
@@ -1330,6 +1333,7 @@ impl<'a> SequenceContext<'a> {
             other => self
                 .spawn_item(other, item)
                 .or_else(|| crate::sequence_picture::PictureItem::parse(other, item).map(ItemKind::Picture))
+                .or_else(|| crate::world_sequence::EntityItem::parse(other, item).map(ItemKind::Entity))
                 .unwrap_or_else(|| ItemKind::Other(other.to_string())),
         }
     }
