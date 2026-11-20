@@ -222,9 +222,16 @@ pub enum Request {
     SaveSettings,
     /// `DAT_011a2470` = 1: the game quits.
     ShutdownGame,
-    /// The mode timer started (`FUN_006f0f80`: the event's `Timeline` sequences, the timeout, the wrong-way
-    /// state) or stopped (`FUN_006f1120`); GMM+0x2e74 already holds `running`.
+    /// The mode timer started (`FUN_006f0f80`: the event's `Timeline` sequences ([`Request::PlayEventTimeline`])
+    /// and the timeout (GMM+0x2f18) are the logic's, [`super::game_modes::start_timer`]; the wrong-way state
+    /// `FUN_006581c0` is the runtime's) or stopped (`FUN_006f1120`); GMM+0x2e74 already holds `running`.
     GameModeTimer { running: bool },
+    /// `FUN_006f0f80`: `FUN_00a45070`(the sequence's handle, 0) on the general sequence manager: one sequence of the
+    /// current event's `Timeline` (+0xa0) starts, its handle kept at GMM+0x2e50 (count +0x2e60).
+    PlayEventTimeline { sequence: u32 },
+    /// `FUN_006e6440` (from the mode reset `FUN_006f89f0` and the event change `FUN_0070b1e0`): `FUN_00a44d50` on
+    /// each kept handle: the event's `Timeline` sequence stops (state 7).
+    StopEventTimeline { sequence: u32 },
     /// `FUN_006f89f0`: the game mode resets.
     ResetGameMode,
     /// `FUN_00726ca0`(event) on the recommendations (Autolog's recommended event after a retry).

@@ -320,6 +320,7 @@ fn receive(world: &mut World) {
                     .find(|(id, _)| *id == e.id)
                     .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
                 // `WAYPOINTS`: the checkpoints' ground points (`natives::pois`).
+                timeline: e.timeline.clone(),
                 waypoints: e
                     .checkpoints
                     .iter()
@@ -959,6 +960,14 @@ fn tick(
             }
             Carry::Effect(e) => t.fx.p0().apply(&e),
             Carry::Race(c) => t.race_fx.apply(c, t.race.driven.as_deref_mut()),
+            Carry::Timeline { sequence, groups } => {
+                if let Some(tl) = t.race_fx.timeline() {
+                    match groups {
+                        Some(groups) => tl.play(store, sequence, groups),
+                        None => tl.stop(sequence),
+                    }
+                }
+            }
             Carry::Profile(a) => t.profile.apply(a),
             Carry::Play { .. } | Carry::Nothing => {}
         }
@@ -987,6 +996,9 @@ enum Carry {
     /// `StartSequence` of any other sequence, `PlaySequence` of any other than the event's intro / outro: its clock
     /// runs here ([`Playback`]).
     Play { owner: Owner, sequence: u32, player: Option<u8> },
+    /// `PlayEventTimeline` (`groups`: the event's feedback groups to read it from) / `StopEventTimeline` (`None`):
+    /// `event_timeline.rs`.
+    Timeline { sequence: u32, groups: Option<Vec<u32>> },
     /// `PLAYSONGLIST` / its exit: the song manager's list (`music::SongListRequest`; 0 = stopped).
     SongList { list: u32, allow_playout: bool },
     /// `PlayUiSound`: `ui_sound.rs`.
@@ -1603,6 +1615,18 @@ impl Host for RuntimeHost {
             Request::CameraTargetChanged { slot } => {
                 (Some(*slot) == self.logic.state.borrow().players.local).then_some(Carry::Nothing)
             }
+            // `FUN_006f0f80` / `FUN_006e6440`: the event's `Timeline` sequences (`event_timeline.rs`).
+            Request::PlayEventTimeline { sequence } => {
+                let current = self.logic.state.borrow().game_modes.current_event;
+                let groups = self
+                    .race
+                    .setup
+                    .as_ref()
+                    .filter(|s| s.event.id == current)
+                    .map_or_else(Vec::new, |s| vec![s.event.feedback_message_group, s.event.intro_message_group]);
+                Some(Carry::Timeline { sequence: *sequence, groups: Some(groups) })
+            }
+            Request::StopEventTimeline { sequence } => Some(Carry::Timeline { sequence: *sequence, groups: None }),
             // The race / game-mode requests (`logic_race.rs`).
             _ if let Some(c) = self.race_request(&r) => c,
             _ => match crate::logic_profile::request(&r, &self.logic.state.borrow(), &mut self.profile) {

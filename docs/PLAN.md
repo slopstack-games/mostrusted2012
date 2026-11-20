@@ -518,6 +518,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    own sequences (`world_sequences.rs`, decomp.md "World-object sequences": AddBehaviour, BehaviourEnabled(Gameplay),
    waves, JumpNTimes loops; flashing road-work and rooftop lights, hydrant / fence sounds). Open: animated props
    (no skinned world objects), the spike strip (player weapon and roadblock strip: placement, deploy, tyre burst).
+   2026-11-20: the event's `Timeline` sequences (`event_timeline.rs`, decomp.md "The event's Timeline sequences"):
+   started with the mode timer, stopped at the reset / event change, their items through `cutscene_spawns.rs` and
+   `sequence_picture.rs`; the mode deadline GMM+0x2f18 is the logic's.
 7. `[~]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD

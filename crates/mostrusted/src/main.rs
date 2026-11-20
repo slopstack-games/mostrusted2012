@@ -37,6 +37,7 @@ mod drive;
 mod easydrive;
 mod event_card;
 mod event_starts;
+mod event_timeline;
 mod exhaust;
 mod feedback;
 mod flash_probe;

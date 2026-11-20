@@ -76,6 +76,8 @@ fn stop_game_mode_timer(s: &mut LogicState, _: Args) -> Key {
 /// GMM+0x2e7f = 0 and `FUN_006f89f0` (the mode's reset, [`Request::ResetGameMode`]).
 fn reset_game_mode(s: &mut LogicState, _: Args) -> Key {
     s.game_modes.has_transitioned_events = false;
+    // `FUN_006f89f0`'s `FUN_006e6440`: the event's `Timeline` sequences stop (the rest of the reset: the runtime).
+    super::game_modes::stop_timeline(s);
     s.requests.push(Request::ResetGameMode);
     EXIT
 }

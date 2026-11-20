@@ -59,6 +59,8 @@ pub fn start_game_mode(s: &mut LogicState, event: u32) {
     s.game_modes.current_mode = event_mode(s, event);
     s.game_modes.machine = None;
     s.game_modes.freedrive_event = is_freedrive_event(s, event);
+    // The trailing mode reset `FUN_006f89f0`: its `FUN_006e6440` stops the last event's `Timeline` sequences.
+    super::game_modes::stop_timeline(s);
 }
 
 /// `FUN_006dfe00`: an event runs (+0x2ce0 ≠ 0) and its data is loaded ((GMM+4)+0xdc == 4).
@@ -158,6 +160,8 @@ fn machine_finished(s: &mut LogicState) {
 /// online branches, the 0x2e8d / 0x2e8f classifications of the mode.
 pub fn end_of_event(s: &mut LogicState) {
     let was_race = s.game_modes.race_event;
+    // 0x0070b26d `FUN_006e6440`: the event's `Timeline` sequences stop.
+    super::game_modes::stop_timeline(s);
     s.game_modes.machine = None;
     s.game_modes.won = true;
     s.game_modes.timer_running = false;

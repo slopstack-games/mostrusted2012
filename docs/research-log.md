@@ -11,6 +11,49 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-20: the event's `Timeline` sequences and the mode deadline (`event_timeline.rs`, PLAN M8.6)
+
+The "in-race feedback-group sequences" of the handoff are mostly the event record's `Timeline` (+0xa0, the field
+`Timeline` = `8bb3903c`), which the mode timer's start `FUN_006f0f80` plays on the general sequence manager and
+`FUN_006e6440` stops (mode reset, event change); decomp.md "The event's Timeline sequences". Ported: the logic's
+`game_modes::start_timer` / `stop_timer` / `stop_timeline` / `display_time_left` (`Request::PlayEventTimeline` /
+`StopEventTimeline`, GMM+0x2e50 handles, the deadline +0x2f18 answering `Query::DisplayTimeLeft`, which was the
+default 0); `mw_assets::events::Event::timeline`; the runtime's `event_timeline.rs` reads each sequence, runs its
+clock (controllers, the game clock) and hands it to `cutscene_spawns.rs` (now one item-state track per playing
+sequence: the cutscene and each Timeline sequence) and `sequence_picture.rs`.
+
+Checked: `--race 906146`: 10/10, 135.83 s (as before); its PostFX 985070 loops every 16 s from go to the end.
+`--race 983993` (CANNONBALL RUN): 14/14, 141.44 s; 1556501's Gameplay type 1 forces level 1519273 at go, stopped at
+the event's end. `--race` / `--test race` runs have no police (main.rs `police_enabled`), so the forced level
+reaches no config there; `--hsm-event 983993 --auto-start 1` (police on) resolves it: row (1519273, level 0).
+`--race 462174`: no Timeline, 27/27, 218.16 s.
+
+Open: the speech items (`SpeechEventSequenceItem`, not parsed); the ambush mode (390185) is not in the runtime, so
+its Timeline (heat 0xe, cops) is not reached; who starts the `SpawnTraffic` sequences of 1119746 (not a Timeline);
+police in `--race` runs (the stand-in `WasBusted` false).
+
+## 2026-11-20: three open logic items surveyed (no code): post-event awards, `WasBusted`, feedback message sounds
+
+- **`PreparePostEventAwards`** (`FUN_006fbb60`): the previous best place GMM+0x2ca2 (i8, −1 none) is not written
+  directly: `FUN_006e29c0` (called by `FUN_006e8690`, `FUN_006f56c0`) fills the record GMM+0x2c58..+0x2c80.. through
+  `FUN_007277d0`(event +0x2c54, ...) on G+0x14ca8 +0x4964, a query of the profile database's table `events4` by
+  `event_id`. So the port needs that table (per-event best place and the +0x2ca1 / +0x2ca5 bytes) kept in our profile,
+  plus the award ids `FUN_006e6500` reads (a config object's +0x1c / +0x20 / +0x24 for 1st / 2nd / other, through
+  (`DAT_010edac8`+4)+0x6e6ec → +0x14 → +0xc), the unit +0x1520 of `FUN_0071de60`'s object (amount = max(0, (4 − place)
+  × unit − (4 − best) × unit), place ≤ 3; `FUN_006ec7b0` gives 0 for first-place-only events and short grids), the
+  unlock bits player +0x4b8 & ~GMM+0x2eb0 against `FUN_006e12d0`'s table, the results records (`FUN_006f1aa0`, 0x108 B at
+  GMM+0x1dd8, count +0x2300) and the outro message (+0x2390 from GameLogicConfig +0x24/+0x28 → +0x138 / +0x13c / +0x140
+  / +0x15c). The logic already models the outputs (`GameModeManager::award_*`, `awards`, `results_2300`) and the place
+  (`Player::final_5b8`). A progression-database port, its own session.
+- **`Players.LocalPlayer.WasBusted`** (player +0x434): written only by the player's update `FUN_006d3550` from its
+  vehicle-state message (busted branch: `FUN_006bd930`, or 1 for message kind 9 with +0x79), cleared with +0x23f. Needs
+  that update's port; the stand-in (false) stays. Races started with `--race` / `--test race` have no police at all
+  (main.rs `police_enabled`); `--hsm-event` races do.
+- **Feedback message sounds** (`FUN_007b9ee0`, `FUN_007b6040`): start through `FUN_0079fb40` (the UI manager's 30
+  sound slots, the same starter as the Lua `PlaySound` natives) with the message's ids: `5fc73ed7` takes 22299,
+  1054247, 116515, 1054225 in the data (33 messages 0); none is a GeneSys UniqueId or resource in the install, so they
+  wait for the same name / id → sound lookup as `PlaySound` (`FUN_007a9910`, not read).
+
 ## 2026-11-20: the intros' Gameplay switches, dynamic entities and SpawnTraffic; the event's heat levels (PLAN M8.6)
 
 Read from the dump and `re/out/live/text.asm`; ported in `cutscene_spawns.rs`, `mw_police::heat`, `police.rs`,

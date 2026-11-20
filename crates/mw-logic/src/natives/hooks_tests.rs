@@ -173,6 +173,46 @@ fn mode_timer_and_events() {
 }
 
 #[test]
+fn mode_timer_starts_the_event_timeline_and_the_deadline() {
+    use super::mode_machine::ModeInfo;
+    use crate::binding::Value;
+    let r = Registry::original_with_parked();
+    let mut s = LogicState::default();
+    s.game_modes.events =
+        vec![EventInfo { id: 7, mode: 730000, timeline: vec![1556501, 985051], ..Default::default() }];
+    s.game_modes.modes =
+        vec![ModeInfo { id: 730000, data: vec![(0xfe4f_2d8c, Value::Float(900.0))], ..Default::default() }];
+    s.game_modes.current_event = 7;
+    s.game_modes.current_mode = 730000;
+    s.game_modes.display_timeout = true;
+    s.engine.ui_ticks = 1000;
+    call(&r, &mut s, "StartGameModeTimer", None);
+    assert_eq!(
+        s.requests,
+        [
+            Request::PlayEventTimeline { sequence: 1556501 },
+            Request::PlayEventTimeline { sequence: 985051 },
+            Request::GameModeTimer { running: true }
+        ]
+    );
+    assert_eq!(s.game_modes.deadline, Some(1000 + 2_700_000_000));
+    assert!(!s.game_modes.display_timeout);
+    s.engine.ui_ticks += 3_000_000;
+    assert_eq!(super::game_modes::display_time_left(&s), 2_697_000_000);
+    s.requests.clear();
+    call(&r, &mut s, "ResetGameMode", None);
+    assert_eq!(
+        s.requests,
+        [
+            Request::StopEventTimeline { sequence: 1556501 },
+            Request::StopEventTimeline { sequence: 985051 },
+            Request::ResetGameMode
+        ]
+    );
+    assert!(s.game_modes.timeline.is_empty());
+}
+
+#[test]
 fn awards() {
     let r = Registry::original_with_parked();
     let mut s = LogicState::default();

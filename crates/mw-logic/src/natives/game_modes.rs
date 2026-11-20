@@ -32,6 +32,9 @@ pub struct EventInfo {
     /// The event record's `Checkpoints` (+0x64, count +0xdc) as `WAYPOINTS` places them: each trigger's ground
     /// point (`FUN_0053c020` → `FUN_00534330`, [`super::pois::ground_point`]; filled by the runtime).
     pub waypoints: Vec<super::trigger_boxes::V3>,
+    /// The event record's `Timeline` (+0xa0, count +0xe6): `Sequence` UniqueIds the mode timer starts
+    /// ([`start_timer`]; filled by the runtime).
+    pub timeline: Vec<u32>,
 }
 
 /// Fields of the GMM the hooks touch.
@@ -147,6 +150,12 @@ pub struct GameModeManager {
     pub player_busted_in_last_event: bool,
     pub need_map_screen: bool,
     pub display_timeout: bool,
+    /// +0x2e50 (4 handles, count +0x2e60): the current event's `Timeline` sequences the mode timer started
+    /// (`FUN_006f0f80`), by UniqueId; stopped by [`stop_timeline`].
+    pub timeline: Vec<u32>,
+    /// +0x2f18 / +0x2f1c: the display deadline on the UI clock (ticks, [`super::state::Engine::ui_ticks`]); `None` is
+    /// the original's empty value (0, `i32::MIN` high). `FUN_006e27e0` (`Query::DisplayTimeLeft`) counts down to it.
+    pub deadline: Option<i64>,
     /// The `GameMode` items (`mode_machine.rs`; filled by the runtime from the install).
     pub modes: Vec<super::mode_machine::ModeInfo>,
     /// +0x2cfc: the serial of the HSM machine the mode runs (−1 in the original = `None`).
@@ -228,6 +237,83 @@ impl GameModeManager {
 pub fn set_timer_running(state: &mut LogicState, running: bool) {
     if state.game_modes.timer_running != running {
         state.game_modes.timer_running = running;
+        if running {
+            start_timer(state);
+        } else {
+            stop_timer(state);
+        }
         state.requests.push(Request::GameModeTimer { running });
     }
+}
+
+/// Ticks of the UI clock per second (`.rdata` 0xf9f604 = 3e6, the factor `FUN_006f0f80` multiplies by).
+pub const UI_TICKS_PER_SECOND: f32 = 3e6;
+
+/// `7b8cb76d` (OfflineEvent +0xd0, u16): with it set, a free-drive event after a bust does not start its
+/// `Timeline` (0 in every event of the install).
+const EVENT_D0: u32 = 0x7b8c_b76d;
+/// `fe4f2d8c` (GameMode +0x50, float): the mode's timeout in seconds (900 for races).
+const MODE_TIMEOUT: u32 = 0xfe4f_2d8c;
+
+fn number(data: &[(u32, crate::binding::Value)], field: u32) -> f64 {
+    use crate::binding::Value as V;
+    match data.iter().find(|(h, _)| *h == field).map(|(_, v)| v) {
+        Some(V::Int(n)) => f64::from(*n),
+        Some(V::UInt(n)) => f64::from(*n),
+        Some(V::Int64(n)) => *n as f64,
+        Some(V::UInt64(n)) => *n as f64,
+        Some(V::Float(f)) => f64::from(*f),
+        Some(V::Double(f)) => *f,
+        Some(V::Bool(b)) => f64::from(u8::from(*b)),
+        _ => 0.0,
+    }
+}
+
+/// `FUN_006f0f80` (the mode timer starts). Offline ((GMM+4)+0xe8 clear): unless an event runs (+0x2ce0), its
+/// record's +0xd0 is set, the event is free drive (+0x2e90) and the player was busted in the last event (+0x2e97),
+/// every sequence of the event's `Timeline` (+0xa0, count +0xe6) starts (`FUN_00a45070`, the handles appended at
+/// +0x2e50); outside the game's intro (+0x2e91 / +0x2e92) a mode timeout above 0 (+0x50 of the mode, against
+/// `.rdata` 0xf8f344 = 0) sets the deadline +0x2f18 to the UI clock (`FUN_0046ee10` +8) plus the timeout × 3e6
+/// (`ftol`, truncated). Online: `FUN_006baf80` (not ported). Then `FUN_006581c0` (the wrong-way state
+/// G+0x439b0..+0x439dc reset: the runtime's) and the display-timeout byte +0x2f10 = 0.
+pub fn start_timer(state: &mut LogicState) {
+    let gm = &state.game_modes;
+    if !gm.online_event {
+        let event = gm.events.iter().find(|e| e.id == gm.current_event);
+        let skip = gm.current_event != 0
+            && event.is_some_and(|e| number(&e.data, EVENT_D0) != 0.0)
+            && gm.freedrive_event
+            && gm.player_busted_in_last_event;
+        let timeline = if skip { Vec::new() } else { event.map(|e| e.timeline.clone()).unwrap_or_default() };
+        let timeout = gm.modes.iter().find(|m| m.id == gm.current_mode).map_or(0.0, |m| number(&m.data, MODE_TIMEOUT));
+        let in_intro = gm.in_game_intro_freedrive || gm.in_game_intro_other;
+        for sequence in timeline {
+            state.game_modes.timeline.push(sequence);
+            state.requests.push(Request::PlayEventTimeline { sequence });
+        }
+        if !in_intro && timeout > 0.0 {
+            let ticks = (timeout as f32 * UI_TICKS_PER_SECOND) as i64;
+            state.game_modes.deadline = Some(state.engine.ui_ticks + ticks);
+        }
+    }
+    state.game_modes.display_timeout = false;
+}
+
+/// `FUN_006f1120` (the mode timer stops): the display-timeout byte +0x2f10 = 0. Not ported: the online session's
+/// end (`FUN_006e8160`, `FUN_00663f40`, `FUN_00649640`, the host's `FUN_00639f20`).
+pub fn stop_timer(state: &mut LogicState) {
+    state.game_modes.display_timeout = false;
+}
+
+/// `FUN_006e6440` (the mode reset `FUN_006f89f0` and the event change `FUN_0070b1e0`): every kept `Timeline`
+/// sequence stops (`FUN_00a44d50`) and the count +0x2e60 is 0.
+pub fn stop_timeline(state: &mut LogicState) {
+    for sequence in std::mem::take(&mut state.game_modes.timeline) {
+        state.requests.push(Request::StopEventTimeline { sequence });
+    }
+}
+
+/// `FUN_006e27e0`: the ticks left until the deadline +0x2f18, 0 when there is none or it has passed.
+pub fn display_time_left(state: &LogicState) -> i64 {
+    state.game_modes.deadline.map_or(0, |d| (d - state.engine.ui_ticks).max(0))
 }
