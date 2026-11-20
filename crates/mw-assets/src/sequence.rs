@@ -119,6 +119,8 @@ mod h {
     // ConductorSequenceItem
     pub const SEQUENCE: u32 = field_hash("Sequence");
     pub const ENABLED_BINDING: u32 = field_hash("EnabledBinding");
+    /// `84531672` (+0x20 of every `SequenceItem`): the `EnabledBinding` evaluation mode.
+    pub const BINDING_MODE: u32 = 0x8453_1672;
     /// `JumpTimelineController`'s destination (unnamed; `sfx_loader` reads the same field).
     pub const JUMP_DESTINATION: u32 = 0xb6a5_1260;
     // LayoutSequenceItem texts (`Text1` is unnamed)
@@ -654,6 +656,9 @@ pub enum ItemKind {
     AddRaceCar(Box<AddRaceCar>),
     /// `SpawnAICopCar`: an AI cop on a trigger with a command ([`SpawnCop`]).
     SpawnCop(Box<SpawnCop>),
+    /// `SpeechEventSequenceItem` (factory 0x00860b20, vtable 0x00ff1c70): its `SpeechEventSequence` ids (`8239ac66`
+    /// +0x24, count `137c3c78` +0x28); its enter (0x00834710) requests the first whose conditions hold.
+    Speech(Vec<u32>),
     /// `GameplaySequenceItem`: a gameplay switch (`FUN_00854990` by `TriggerType`, with `Data`).
     Gameplay {
         data: u32,
@@ -701,6 +706,10 @@ pub struct Item {
     pub depth: u32,
     /// `EnabledBinding` (empty = always on).
     pub enabled: String,
+    /// `84531672` (+0x20, u16): how the item loop `FUN_00a42b90` evaluates `enabled`: 3 once (cached in the item's
+    /// state bits 2 / 3), 2 once per stay in range (bits 4 / 5, cleared at the exit), other values every frame. A
+    /// binding that does not hold keeps the item out (state 0; 5 for mode 2).
+    pub binding_mode: u16,
     /// The [`ClockNode`] it plays on (0 = the sequence's own clock; flattened items of conducted sequences name
     /// their conductor's node).
     pub clock: usize,
@@ -866,6 +875,7 @@ impl Sequence {
                 ItemKind::AddRaceCar(_) => "AddRaceCar".into(),
                 ItemKind::SpawnCop(_) => "SpawnCop".into(),
                 ItemKind::Gameplay { .. } => "Gameplay".into(),
+                ItemKind::Speech(_) => "Speech".into(),
                 ItemKind::AnimatedTraffic(_) => "AnimatedTraffic".into(),
                 ItemKind::OverrideTraffic(_) => "OverrideTraffic".into(),
                 ItemKind::SpawnTraffic(_) => "SpawnTraffic".into(),
@@ -1082,6 +1092,7 @@ impl<'a> SequenceContext<'a> {
                             kind: ItemKind::Conductor(Box::new(child)),
                             depth: 0,
                             enabled: string(item, h::ENABLED_BINDING),
+                            binding_mode: uint(item, h::BINDING_MODE) as u16,
                             clock: 0,
                         });
                     }
@@ -1113,7 +1124,17 @@ impl<'a> SequenceContext<'a> {
             }
             let kind = self.item_kind(item, start, end);
             let enabled = string(item, h::ENABLED_BINDING);
-            seq.items.push(Item { unique_id: uint(item, h::ID), start, end, kind, depth: 0, enabled, clock: 0 });
+            let binding_mode = uint(item, h::BINDING_MODE) as u16;
+            seq.items.push(Item {
+                unique_id: uint(item, h::ID),
+                start,
+                end,
+                kind,
+                depth: 0,
+                enabled,
+                binding_mode,
+                clock: 0,
+            });
         }
         seq.items.sort_by(|a, b| a.start.total_cmp(&b.start));
         let monitored = seq
@@ -1326,6 +1347,17 @@ impl<'a> SequenceContext<'a> {
                 flags: [0x3c4e_5e2b, 0xf282_51e6, 0xcb97_beb9].map(|k| boolean(item, k).unwrap_or(false)),
             },
             "MusicStateSequenceItem" => ItemKind::MusicState(string(item, h::STATE)),
+            "SpeechEventSequenceItem" => ItemKind::Speech(match item.get(0x8239_ac66) {
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::UInt(n) => u32::try_from(*n).ok(),
+                        Value::Int(n) => u32::try_from(*n).ok(),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }),
             "VfxLocatorGroupVehicleSpotEffectSequenceItem" | "VfxSpotEffectSequenceItem" => {
                 crate::damage_vfx::SpotItem::read(item)
                     .map_or_else(|| ItemKind::Other(short(item).to_string()), |i| ItemKind::VfxSpot(Box::new(i)))

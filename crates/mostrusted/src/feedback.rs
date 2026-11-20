@@ -288,6 +288,7 @@ fn load(store: &mw_assets::AssetStore, id: u32, instance: u64, layer: u32) -> Op
         kind: ItemKind::Layout { layout: Some(rid), layer, texts: [0; 3], instance },
         depth: 0,
         enabled: String::new(),
+        binding_mode: 0,
         clock: 0,
     };
     let clocks = vec![mw_assets::sequence::ClockNode::root(Vec::new(), f32::MAX)];

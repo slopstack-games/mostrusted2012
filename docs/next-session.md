@@ -14,7 +14,7 @@ UI requests (`logic_profile.rs`); research log 2026-11-19 / 20.
 **Open**:
 - **Sequences left**: spike strips (roadblock strip placement, tyre burst; the player's weapon has no offline
   event), animated world props (no skinned world objects), the starter of 1119746's SpawnTraffic sequences (not a
-  `Timeline`), speech items, the ambush mode (its Timeline is not reached), HUD sequences' controllers, picture items on the
+  `Timeline`), `cutscene.rs` items' `EnabledBinding`, the ambush mode (its Timeline is not reached), HUD sequences' controllers, picture items on the
   top-level clock only, motion blur / DOF / DisableWorldRendering in the renderer, wrecked state (169 damage items).
 - **Logic**: `PreparePostEventAwards` needs the profile DB's `events4` table + award / unlock tables (research log
   2026-11-20 "three open logic items"); `WasBusted` needs the player update `FUN_006d3550`; police in `--race` runs;
