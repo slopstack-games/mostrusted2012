@@ -64,8 +64,14 @@
 //!   trigger box read here first); `RouteToFirstWaypointPoi` routes the GPS to the first waypoint
 //!   (`Effect::RouteTo`); `Query::MapRouteBlocked` is `gps::Gps::busy`.
 //!
+//! - **race / game-mode requests** (`logic_race.rs`, its doc lists each): `AddAllAIPlayers` fills the AI player
+//!   slots and starts `ai.rs`'s grid (the hook `AreAllAIPlayersLoaded` then waits for the cars, `SetIntroLoadComplete`
+//!   sets `Mode.HasIntroLoadCompleted`), `GameModeTimer` is go (`RaceDriven::timer`), `PauseAi`, the repairs, the
+//!   props' and the traffic's restarts, the scoring counter, the in-place `Respawn`, `StopAllSequences`; the
+//!   requests with nothing for the runtime to change are marked done there with the reason.
+//!
 //! Everything else (the HUD screen's requests, the profile's game state) is still logged only:
-//! `freeroam.rs`, the rest of `race.rs` (stepping, AI, results) and of `frontend.rs` drive the game. Queries nobody
+//! `freeroam.rs`, the rest of `race.rs` (stepping, results) and of `frontend.rs` drive the game. Queries nobody
 //! answers log their default once (`hsm: ... query X: default answer N`).
 //!
 //! What the runtime answers from its own state: the title sequence's general trigger "BOOT"
@@ -81,10 +87,9 @@
 //! `race.rs`, `cutscene.rs`, `hud.rs`): `Query::CheckpointCount` / `CheckpointsLoaded` / `CheckpointsFinished` (the
 //! event's gates, the player past the last), `Query::SequencePlaying` of the intro / outro playbacks (the cutscene
 //! plays; the outro's also while the results after it run), `Event.Data.EventIntro` / `EventOutro` (the event's ids),
-//! `Players.LocalPlayer.ResetInProgress` (the car held at the start), `Mode.HasIntroLoadCompleted` (GMM+0x2e82).
+//! `Players.LocalPlayer.ResetInProgress` (the car held at the start), the AI slots' loaded flags (`race.rs`).
 //!
-//! Race stand-ins (model decisions): `Mode.HasIntroLoadCompleted` is set once the race is placed with its
-//! opponents (what the original's intro load waits for was not traced); the "TRANSITION" general trigger stays set
+//! Race stand-ins (model decisions): the "TRANSITION" general trigger stays set
 //! from the card's item until the event ends (the original clears it when the item ends; the logic may reach its
 //! wait after that here); `Players.LocalPlayer.WasBusted` is false (no police in the runtime's races); the outro's
 //! playback also holds through the hand-written results (the offline results screen is not ported).
@@ -122,6 +127,10 @@ use mw_logic::natives::{LogicHost, Request, progression};
 use crate::cutscene::{CutsceneState, Which};
 use crate::frontend::{FrontEnd, Phase};
 use crate::race::{RaceDriven, RaceSetup, RaceState, StartRace};
+
+/// The race / game-mode requests (`logic_race.rs`).
+#[path = "logic_race.rs"]
+mod logic_race;
 
 const BUNDLE: &str = "GAMELOGIC/GAMEMODES.BNDL";
 /// "Top State": the boot machine.
@@ -176,6 +185,8 @@ impl Plugin for LogicPlugin {
         .init_resource::<crate::logic_effects::RoadFeed>()
         .add_systems(Update, crate::logic_effects::load_road_feed.before(LogicTick))
         .add_systems(FixedUpdate, crate::logic_effects::place_vehicles.before(crate::drive::car_physics))
+        .init_resource::<logic_race::PendingRespawn>()
+        .add_systems(FixedUpdate, logic_race::respawn_in_place.before(crate::drive::car_physics))
         .insert_resource(HsmEvent(self.event.clone()))
         .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
         .add_systems(Startup, start_loading)
@@ -616,6 +627,8 @@ struct Targets<'w, 's> {
     pois: Option<ResMut<'w, crate::poi::Pois>>,
     /// The speech manager (`police_speech.rs`).
     speech: Option<Res<'w, crate::police_speech::SpeechLink>>,
+    /// The race / game-mode requests' systems (`logic_race.rs`).
+    race_fx: logic_race::RaceFx<'w, 's>,
 }
 
 /// The race the logic drives (`race.rs`, `event_card.rs`, `cutscene.rs` in driven mode).
@@ -625,7 +638,6 @@ struct Race<'w, 's> {
     driven: Option<ResMut<'w, RaceDriven>>,
     card: Option<Res<'w, crate::event_card::EventCard>>,
     hud: Option<Res<'w, crate::hud::HudState>>,
-    loaded: Res<'w, crate::Loaded>,
     plays: MessageReader<'w, 's, crate::event_card::PlayEvent>,
     start: MessageWriter<'w, StartRace>,
 }
@@ -872,6 +884,12 @@ fn tick(
                 if let Some(c) = t.traffic.as_deref_mut() {
                     match kind {
                         6 => c.stopped = true,
+                        // `RestartTraffic` (`FUN_0060a380` case 7 → `FUN_00615020`): every car goes, the stop
+                        // flag is cleared.
+                        7 => {
+                            c.reset = true;
+                            c.stopped = false;
+                        }
                         8 => c.reset = true,
                         _ => c.stopped = false,
                     }
@@ -897,6 +915,11 @@ fn tick(
                 if let Some(c) = t.cutscene.as_deref_mut() {
                     c.reset();
                 }
+                // The event's start: the mode timer is off (`FUN_0070b1e0` cleared GMM+0x2e74) and the AI not added.
+                if let Some(d) = t.race.driven.as_deref_mut() {
+                    d.timer = false;
+                    d.add_ai = false;
+                }
                 t.race.start.write(StartRace(setup));
             }
             Carry::PlayCutscene(which) => {
@@ -921,6 +944,7 @@ fn tick(
                 }
             }
             Carry::Effect(e) => t.fx.p0().apply(&e),
+            Carry::Race(c) => t.race_fx.apply(c, t.race.driven.as_deref_mut()),
             Carry::Play { .. } | Carry::Nothing => {}
         }
     }
@@ -978,6 +1002,8 @@ enum Carry {
     SnapCamera,
     /// A request on the runtime's own systems (`logic_effects.rs`).
     Effect(crate::logic_effects::Effect),
+    /// The race / game-mode requests (`logic_race.rs`).
+    Race(logic_race::RaceCarry),
     /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
     Nothing,
 }
@@ -1126,13 +1152,8 @@ struct RaceLink {
     /// The card's "TRANSITION" was handed to the logic.
     transition: bool,
     // The runtime's answers, refreshed every frame ([`RaceLink::observe`]).
-    /// `race.rs` has the event (`RaceState`), and for how many frames (the AI sets the race up on its first).
-    loaded: bool,
-    loaded_frames: u32,
     /// The player's car is held at the start until it is resident (`RaceState::placing`).
     placing: bool,
-    /// The race is ready to show: placed, opponents placed (`RaceState::hold`), the world loaded.
-    ready: bool,
     intro_done: bool,
     /// The outro is over and so are the results after it (`hud.rs`).
     outro_done: bool,
@@ -1144,10 +1165,7 @@ impl RaceLink {
             return;
         }
         let race = r.state.as_deref().filter(|_| self.started);
-        self.loaded = race.is_some();
-        self.loaded_frames = if self.loaded { self.loaded_frames + 1 } else { 0 };
         self.placing = self.started && race.is_none_or(|r| r.placing);
-        self.ready = race.is_some_and(|r| !r.placing && !r.hold) && r.loaded.done && self.loaded_frames > 2;
         let finished = |w| cutscene.is_none_or(|c| c.finished(w));
         self.intro_done = finished(Which::Intro);
         let results_over = r.hud.as_ref().is_none_or(|h| {
@@ -1155,11 +1173,7 @@ impl RaceLink {
                 || race.is_some_and(|r| r.phase != crate::race::RacePhase::Finished)
         });
         self.outro_done = finished(Which::Outro) && results_over;
-        // `Mode.HasIntroLoadCompleted` (+0x2e82): the event is loaded and placed (model decision, module doc).
         let mut st = logic.state.borrow_mut();
-        if self.ready && st.game_modes.machine.is_some() && st.game_modes.current_event == self.event() {
-            st.game_modes.intro_load_complete = true;
-        }
         // The card's "TRANSITION" (set from the item on until the event's end: model decision, module doc).
         if !self.transition && r.card.as_ref().is_some_and(|c| c.transition()) {
             self.transition = true;
@@ -1411,7 +1425,6 @@ impl Host for RuntimeHost {
                 self.race.started = true;
                 // The reset is pending from the request on (`race.rs` puts the car down once the start is in).
                 self.race.placing = true;
-                self.race.ready = false;
                 self.race.setup.clone().map(Carry::StartRace)
             }
             Request::PlaySequence { playback, sequence, .. }
@@ -1569,6 +1582,8 @@ impl Host for RuntimeHost {
             Request::CameraTargetChanged { slot } => {
                 (Some(*slot) == self.logic.state.borrow().players.local).then_some(Carry::Nothing)
             }
+            // The race / game-mode requests (`logic_race.rs`).
+            _ if let Some(c) = self.race_request(&r) => c,
             _ => self.effect(&r).map(Carry::Effect),
         };
         let done = carried.is_some()

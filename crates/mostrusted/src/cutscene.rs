@@ -32,8 +32,9 @@
 //! (`0bd6ff75` flags, `FUN_0049a910`): the camera stays where the car finished and the car drives out of shot, as
 //! the original does.
 //!
-//! Model decisions (no source yet): the race starts on the intro's event trigger (the item that signals the game
-//! logic; what the HSM does with it was not traced); `GetTransform` bindings of animated cameras follow the car
+//! Model decisions (no source yet): without the logic (`--no-hsm`) the race starts on the intro's event trigger
+//! (with it, go is the logic's `StartGameModeTimer` after the intro, `logic_race.rs`; the trigger only ends the
+//! cutscene's hold); `GetTransform` bindings of animated cameras follow the car
 //! live; the animated car is placed on the clip's car bone every tick with the clip's velocity (the original
 //! drives it with its `controls_*` bones, not read); audio, post-processing and UI layouts other than the
 //! letterbox are not played; the controllers' bindings resolve only through the logic (`--hsm`), else they do

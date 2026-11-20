@@ -40,6 +40,7 @@ impl Plugin for AiPlugin {
             scripted: Vec::new(),
         })
         .init_resource::<AiSettings>()
+        .init_resource::<AiPaused>()
         .add_systems(Startup, |game: Res<crate::Game>, mut s: ResMut<AiSettings>| {
             s.0 = crate::ai_driver::config_from_data(&game.store)
         })
@@ -484,13 +485,15 @@ struct AiTest {
 fn race_from_event(
     mut commands: Commands,
     event: Option<ResMut<crate::race::RaceState>>,
+    driven: Option<Res<crate::race::RaceDriven>>,
     mut opponents: ResMut<Opponents>,
     game: Res<crate::Game>,
     garage: Option<Res<crate::garage::Garage>>,
     mut done: Local<bool>,
 ) {
     let Some(mut event) = event else { return };
-    if *done {
+    // Driven by the logic, the racers come with its `AddAllAIPlayers` (`FUN_00686f30`, `logic_race.rs`).
+    if *done || driven.is_some_and(|d| !d.add_ai) {
         return;
     }
     *done = true;
@@ -791,6 +794,11 @@ fn spawn_opponents(
     opponents.arrived = waiting;
 }
 
+/// `PAUSEAI` (`Request::PauseAi`, G+0x2ef50..0x2ef5f set for every vehicle): the racer state `FUN_0050da90` returns
+/// before it drives while its vehicle's byte is set (`FUN_006a05d0`), so the AI racers' controls stay as they were.
+#[derive(Resource, Default)]
+pub struct AiPaused(pub bool);
+
 /// Every fixed tick, before the physics: each AI driver writes its car's controls (the game runs the AI pass
 /// before the player manager and the world step, `FUN_004766a0`).
 #[allow(clippy::type_complexity)]
@@ -803,6 +811,7 @@ pub(crate) fn ai_drive(
     spatial: SpatialQuery,
     event: Option<Res<crate::race::RaceState>>,
     progress: Query<&crate::race::RacerProgress>,
+    paused: Option<Res<AiPaused>>,
     mut manager: Local<mw_ai::RubberBandManager>,
     mut cars: Query<(
         Entity,
@@ -894,6 +903,11 @@ pub(crate) fn ai_drive(
                 );
                 commands.entity(entity).remove::<crate::car_impacts::AiCrash>();
             }
+            continue;
+        }
+        // The AI paused (`PAUSEAI`): the racers' state does nothing (not the player's car the intro drives, not
+        // the cops, whose states do not read the byte).
+        if paused.as_ref().is_some_and(|p| p.0) && !is_player && !is_cop {
             continue;
         }
         // Before go the race freezes every car (`FREEZE_CAR`, `FUN_006c1a80`: handbrake held).

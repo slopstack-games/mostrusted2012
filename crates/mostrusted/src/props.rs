@@ -448,6 +448,7 @@ pub struct PropsPlugin;
 impl Plugin for PropsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PropStats>()
+            .init_resource::<ResetAllProps>()
             .init_resource::<WorldSurfaces>()
             .init_resource::<PropGrid>()
             .add_message::<PropImpact>()
@@ -1229,12 +1230,19 @@ pub(crate) fn prop_contacts(
     }
 }
 
+/// The logic's `ResetProps` (message 0x15 → `FUN_0055a680` case 0x15: `FUN_00559b50`, `FUN_00559e20` and
+/// `FUN_005536f0`, which puts every active slot of the moving-prop pool back with `FUN_00553540`): on the next
+/// [`reset_far_props`] every knocked prop goes back where it stood, near or not.
+#[derive(Resource, Default)]
+pub struct ResetAllProps(pub bool);
+
 /// Knocked props go back where they stood (or are removed, `mbRemoveInsteadOfReset`) as soon as both the
 /// camera and the player's car are farther from them than their reset distance (`FUN_0055ae50`, every frame,
 /// no timer; `mfResetDistanceSquared` against both squared distances).
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn reset_far_props(
     mut commands: Commands,
+    reset_all: Option<ResMut<ResetAllProps>>,
     car: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     mut props: Query<(Entity, &mut PropBody, &mut Transform, Option<&mut Compound>), Without<CompoundPiece>>,
@@ -1245,12 +1253,13 @@ fn reset_far_props(
     let Ok(car) = car.single() else { return };
     let car = car.translation();
     let camera = camera.iter().next().map_or(car, |c| c.translation());
+    let all = reset_all.is_some_and(|mut r| std::mem::take(&mut r.0));
     for (e, mut prop, mut t, compound) in &mut props {
         if prop.pinned {
             continue;
         }
         let d = prop.physics.reset_distance;
-        let near = |p: Vec3| p.distance(car) <= d || p.distance(camera) <= d;
+        let near = |p: Vec3| !all && (p.distance(car) <= d || p.distance(camera) <= d);
         // A smashed compound goes back once neither its home nor any of its parts is near (model decision: the
         // game resets each part in its own slot).
         let smashed = compound.as_ref().is_some_and(|c| c.smashed);
@@ -1275,7 +1284,8 @@ fn reset_far_props(
                 commands.entity(e).insert(Visibility::Inherited);
             }
         }
-        if prop.physics.remove_instead_of_reset {
+        // `FUN_005536f0` puts every slot back (`FUN_00553540`), never removes.
+        if prop.physics.remove_instead_of_reset && !all {
             commands.entity(e).despawn();
             continue;
         }
