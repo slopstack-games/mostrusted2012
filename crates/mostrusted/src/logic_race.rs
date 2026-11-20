@@ -100,6 +100,14 @@ impl RuntimeHost {
             Request::ResetProps => race(RaceCarry::ResetProps),
             Request::RestartTraffic => Some(Some(Carry::Traffic(7))),
             Request::AdjustScoringDisabled { delta } => race(RaceCarry::ScoringDisabled(*delta)),
+            // `FUN_006c9fb0` returns at once while a reset is under way (player +0x2c1): the respawn at the event's
+            // start still placing the car (`logic_effects::place_vehicles`).
+            Request::Respawn { event: 0, to_swap_spot: false }
+                if self.logic.state.borrow().players.local_player().is_some_and(|p| p.reset_pending) =>
+            {
+                info!("hsm: {:5} respawn ignored: a reset is under way", self.frame);
+                nothing
+            }
             Request::Respawn { event: 0, to_swap_spot: false } => {
                 let timer_running = self.logic.state.borrow().game_modes.timer_running;
                 race(RaceCarry::Respawn { timer_running })
@@ -111,6 +119,20 @@ impl RuntimeHost {
                 if mode_machine::is_freedrive_event(&self.logic.state.borrow(), *event) =>
             {
                 nothing
+            }
+            // `RequestRespawnAtEventStart` of an event `race.rs` does not start (the game's intro 1560354 "WELCOME TO
+            // FAIRHAVEN" and the other non-race modes): `FUN_006cd380` → `FUN_006c9fb0` → `FUN_006d0180`, the car on
+            // the event's spawn point (`SpawnPosition` +0x9c, resolved from G+0x2f6f8) facing its direction, at rest
+            // (the mode timer does not run yet), placed by `FUN_00647e00` (reason 6) once the world there is in.
+            Request::Respawn { event, to_swap_spot: false } if *event != 0 && *event != self.race.event() => {
+                let (position, direction) = *self.event_starts.get(event)?;
+                info!("hsm: {:5} respawn at the start of event {event}: {position:.1?}", self.frame);
+                Some(Some(Carry::Effect(crate::logic_effects::Effect::Place(crate::logic_effects::Placement {
+                    position,
+                    direction,
+                    mph: 0.0,
+                    reason: 6,
+                }))))
             }
             Request::StopAllSequences => {
                 self.playbacks.retain(|p| !matches!(p.player, Some(0 | 1)));

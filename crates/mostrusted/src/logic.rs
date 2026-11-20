@@ -189,7 +189,8 @@ impl Plugin for LogicPlugin {
         .init_resource::<crate::logic_effects::PendingPlacement>()
         .init_resource::<crate::logic_effects::RoadFeed>()
         .add_systems(Update, crate::logic_effects::load_road_feed.before(LogicTick))
-        .add_systems(FixedUpdate, crate::logic_effects::place_vehicles.before(crate::drive::car_physics))
+        // In `Update`: a placement at an event's start waits while the logic has the sim paused (`PAUSESIM`).
+        .add_systems(Update, crate::logic_effects::place_vehicles.after(LogicTick))
         .init_resource::<logic_race::PendingRespawn>()
         .add_systems(FixedUpdate, logic_race::respawn_in_place.before(crate::drive::car_physics))
         .insert_resource(HsmEvent(self.event.clone()))
@@ -347,7 +348,11 @@ fn receive(world: &mut World) {
             .collect();
         st.game_modes.event_data_ready = true;
     }
-    let event_starts = events.events.iter().filter_map(|e| Some((e.id, Vec3::from(e.spawn?.position)))).collect();
+    let event_starts = events
+        .events
+        .iter()
+        .filter_map(|e| e.spawn.map(|s| (e.id, (Vec3::from(s.position), Vec3::from(s.direction)))))
+        .collect();
     let playlists = events.game_modes.iter().map(|m| (m.id, m.music_playlist)).collect();
     let store = world.resource::<crate::Game>().store.clone();
     // The meet-up's looks (`MapPoiConfig` +0x44 / +0x40, `SHOWMEETUPPO`).
@@ -1118,7 +1123,8 @@ struct RuntimeHost {
     /// Each game mode's `MusicPlaylist` (`Query::DefaultEventSongList`).
     playlists: HashMap<u32, u32>,
     /// Each event's start position (`SetRouteFromPlayerToEvent`).
-    event_starts: HashMap<u32, Vec3>,
+    /// Each event's spawn point: position and direction (`SpawnPosition`, +0x9c).
+    event_starts: HashMap<u32, (Vec3, Vec3)>,
     /// `CHANGEVSYNCS`: G+0x2f723, the 60 Hz mode (`Query::FullRate`).
     full_rate: bool,
     /// `STARTCARSELE`: G+0x2ef70 +0x44, the world-shown byte (`Query::WorldShownFlag`).
@@ -1246,7 +1252,7 @@ impl RuntimeHost {
             Request::ClearTargetRoute => Effect::ClearRoute,
             Request::SetRouteFromPlayerToEvent { event } => {
                 let event = u32::try_from(*event).ok()?;
-                Effect::RouteToEvent { event, position: *self.event_starts.get(&event)? }
+                Effect::RouteToEvent { event, position: self.event_starts.get(&event)?.0 }
             }
             Request::NitrousAward { slot, amount } if *slot == local => Effect::NitrousAward { amount: *amount },
             Request::NitrousInfinite { slot, on } if *slot == local => Effect::NitrousInfinite(*on),

@@ -32,6 +32,40 @@ Open: the speech items (`SpeechEventSequenceItem`, not parsed); the ambush mode 
 its Timeline (heat 0xe, cops) is not reached; who starts the `SpawnTraffic` sequences of 1119746 (not a Timeline);
 police in `--race` runs (the stand-in `WasBusted` false).
 
+## 2026-11-20: the game's intro start, upside-down and off-the-map crashes (user bug reports)
+
+- **Intro "teleports to the wrong place"**: on a new game the logic asks `RequestRespawnAtEventStart` for the intro
+  event 1560354 "WELCOME TO FAIRHAVEN" (mode 1560350); the runtime only carried that request out for races, so the
+  car stayed at the free-roam default start (1718.8, 31.7, 2220.9) instead of the event's `SpawnPosition` 1909290
+  (2012.3, 63.1, 3822.0, 124.6°). Now `logic_race.rs` places the car there (`FUN_006cd380` → `FUN_006c9fb0` →
+  `FUN_006d0180`, reason 6, at rest) for any event `race.rs` does not start. Two runtime faults found on the way:
+  `place_vehicles` ran in `FixedUpdate`, which does not run while the logic pauses the sim around an event's start
+  (`PAUSESIM`), so it never placed (now `Update`, ground through `GroundRay`, which handles the paused trees); and the
+  logic's second `RequestRespawn` 2 frames later ran as well, where `FUN_006c9fb0` returns while a reset is under way
+  (player +0x2c1): `place_vehicles` now sets the logic player's `reset_pending` while it waits
+  (`Players.LocalPlayer.ResetInProgress`) and `RequestRespawn` is ignored meanwhile. Verified: `--front-end
+  --new-game` places the car at (2012.3, 63.1, 3822.0) facing 125°.
+- **Intro "always plays"**: it ends only on "Exit When In Jack Spot Car" 1560431
+  (`Players.LocalPlayer.GetVehicleInfo.ID(EQUALS:1085007)`); `SetNewGameIntroCompleted` writes `last_played`[0xb] = 1
+  after it. A run quit before the jack-spot swap starts the intro again. The user's profile already has
+  `lastplayed=11:1` (boot with it: `ShouldPlayNewGameIntro` FALSE, free roam at swap spot 1129480); not reset.
+  Open: `SetSinglePlayerRollout` (the new game's car) is not carried out.
+- **Upside down** (`FUN_00918600` every frame per vehicle): the body's up y below `.bss` 0x01185790 = 0.17365
+  (sin 10°, read from the live snapshot) with the car not crashed (+0x1774) → `FUN_009168b0` ("voodoo logic" /
+  "upside down") when `FUN_006a3b50` allows: an event runs (GMM+0x2ce0), its mode started (`FUN_006dfe00`), and
+  for the human player always (`FUN_006bf1f0` is an AI-only flag). Ported in `crash.rs` (`MW_FLIP_AT=<s>` test aid).
+- **Off the map**: the original's "over fatal collision" (`FUN_00916cc0` → `FUN_00916b70`, regions per vehicle bit
+  sets and the crash config `FUN_00547170`'s sequences, which `FUN_006d6110` also maps to `IsFallingOffCliff`
+  +0x2f6) is not decoded; "Beached" (`FUN_00916670`, 20 s timer `.bss` 0x01185410, four-lane wheel tests) neither.
+  MODEL in `crash.rs`: 2 s with no wheel down, 10 m below the take-off height, falling, no world collision within
+  200 m below while the zone there is loaded → crash. Verified (`MW_FLIP_AT=8,-2300,80,1700`: "left the world",
+  reset to the road; `-1800`: lands on terrain, upside down, reset).
+- **The reset pose** (MODEL, the original moves it onto the road network `FUN_00648060`): the last pose on three
+  wheels, upright, with collision right under it, at least 1 s old (else the last such pose kept past the 3 s
+  history), so a reset after a flip or a fall is not in the air.
+- Checked: 462174 27/27 218.12 s, 906146 10/10 135.83 s, 0 crashes (`--test race` carries the car kinematically:
+  the two new rules skip it), pursuit passes.
+
 ## 2026-11-20: the event's gameplay triggers (`gameplay_triggers.rs`, decomp.md "Gameplay triggers")
 
 The starter of 983993's `SpawnTraffic` sequences is a `GameplayTrigger` (1119741..3: `Input.Trigger` a world box,

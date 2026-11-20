@@ -178,6 +178,13 @@ impl Residency {
         self.loaded.remove(&unit);
     }
 
+    /// The zone nearest `p` is loaded (its collision is in), whatever the loader's state (`--units` runs load only
+    /// some). Without a zone list: true.
+    pub fn zone_loaded(&self, p: Vec3) -> bool {
+        let Some(zones) = &self.zones else { return true };
+        zones.nearest(p.x, p.z).is_some_and(|z| self.loaded.contains(&z.id))
+    }
+
     /// `Resident(p, r)` (`FUN_0054b540` → `FUN_0054b340`): the zone holding `p` is loaded and so is every
     /// neighbour zone within `r` of `p`. Without a zone list, or once the loader is done, everything is.
     pub fn resident(&self, p: Vec3, r: f32) -> bool {
