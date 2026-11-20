@@ -64,7 +64,12 @@
 //!   trigger box read here first); `RouteToFirstWaypointPoi` routes the GPS to the first waypoint
 //!   (`Effect::RouteTo`); `Query::MapRouteBlocked` is `gps::Gps::busy`.
 //!
-//! Everything else (the HUD screen's requests, the profile's game state) is still logged only:
+//! - the profile / progression / UI requests (`logic_profile.rs`): `NewGame`, `SaveProfile` (the logic's
+//!   autosave replaces the runtime's timer), `SetRolloutFromProfile`, `UpdateBodyShop`, `UpdateMinimapIcons`,
+//!   `ClearSelectedEvent`, `SetBlackBackground`, `SetProfileSyncFlag`, and the offline answers to the online /
+//!   platform ones; `PauseMessages` on the message queues (`feedback_queue.rs`).
+//!
+//! Everything else (the HUD screen's requests, the rest of the profile's game state) is still logged only:
 //! `freeroam.rs`, the rest of `race.rs` (stepping, AI, results) and of `frontend.rs` drive the game. Queries nobody
 //! answers log their default once (`hsm: ... query X: default answer N`).
 //!
@@ -180,6 +185,7 @@ impl Plugin for LogicPlugin {
         .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
         .add_systems(Startup, start_loading)
         .add_systems(Update, (receive, choose_event, tick.in_set(LogicTick), race_shots).chain());
+        crate::logic_profile::build(app, self.direct);
     }
 }
 
@@ -358,6 +364,7 @@ fn receive(world: &mut World) {
         event_starts,
         full_rate: false,
         world_shown_flag: false,
+        profile: Default::default(),
         mute: [0; MUTE_REASONS],
         rumble_mute: [false; MUTE_REASONS],
         collectables_ready: false,
@@ -616,6 +623,8 @@ struct Targets<'w, 's> {
     pois: Option<ResMut<'w, crate::poi::Pois>>,
     /// The speech manager (`police_speech.rs`).
     speech: Option<Res<'w, crate::police_speech::SpeechLink>>,
+    /// The profile / progression / UI requests (`logic_profile.rs`).
+    profile: crate::logic_profile::Targets<'w, 's>,
 }
 
 /// The race the logic drives (`race.rs`, `event_card.rs`, `cutscene.rs` in driven mode).
@@ -673,6 +682,11 @@ fn tick(
     host.frame = *frame;
     // The loads the logic asked for (feedback groups, screens, layouts, the profile) that ended.
     host.loads.poll(*frame);
+    // The loaded profile's progression database (`FUN_0071f010`): its `last_played` table, when the file has one.
+    if let Some(table) = host.loads.take_last_played() {
+        info!("hsm: {:5} the profile's last_played table {table:?}", *frame);
+        host.logic.state.borrow_mut().progression.last_played = table;
+    }
     // The feedback groups' messages are the message queues' group slots (`feedback.rs`).
     for (group, messages) in host.loads.take_feedback_groups() {
         let defs = messages.map(|m| m.iter().map(crate::feedback::message_def).collect());
@@ -921,6 +935,7 @@ fn tick(
                 }
             }
             Carry::Effect(e) => t.fx.p0().apply(&e),
+            Carry::Profile(a) => t.profile.apply(a),
             Carry::Play { .. } | Carry::Nothing => {}
         }
     }
@@ -978,6 +993,8 @@ enum Carry {
     SnapCamera,
     /// A request on the runtime's own systems (`logic_effects.rs`).
     Effect(crate::logic_effects::Effect),
+    /// A profile / progression / UI request (`logic_profile.rs`).
+    Profile(crate::logic_profile::Action),
     /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
     Nothing,
 }
@@ -1077,6 +1094,8 @@ struct RuntimeHost {
     nis_running: bool,
     /// Queries answered with their default (logged once each).
     defaults: HashSet<String>,
+    /// The profile / progression / UI requests' state (`logic_profile.rs`).
+    profile: crate::logic_profile::State,
     logic: LogicHost,
     /// A GPS route is requested or shown (`Query::MapRouteBlocked`, `gps::Gps::busy`), refreshed every frame.
     route_busy: bool,
@@ -1515,7 +1534,9 @@ impl Host for RuntimeHost {
             // The message queues' clears (`feedback_queue.rs`, `FeedbackQueues::apply`).
             Request::ClearHudMessageQueues
             | Request::ClearFeedbackQueues { .. }
-            | Request::ClearFeedbackQueue { .. } => {
+            | Request::ClearFeedbackQueue { .. }
+            | Request::PauseMessages { .. }
+            | Request::ForcePauseMessageQueues { .. } => {
                 let st = &mut *self.logic.state.borrow_mut();
                 st.feedback_queues.apply(&r, &mut st.layer_sets.set).then_some(Carry::Nothing)
             }
@@ -1569,7 +1590,11 @@ impl Host for RuntimeHost {
             Request::CameraTargetChanged { slot } => {
                 (Some(*slot) == self.logic.state.borrow().players.local).then_some(Carry::Nothing)
             }
-            _ => self.effect(&r).map(Carry::Effect),
+            _ => match crate::logic_profile::request(&r, &self.logic.state.borrow(), &mut self.profile) {
+                Some(crate::logic_profile::Done::Act(a)) => Some(Carry::Profile(a)),
+                Some(crate::logic_profile::Done::Nothing) => Some(Carry::Nothing),
+                None => self.effect(&r).map(Carry::Effect),
+            },
         };
         let done = carried.is_some()
             || matches!(
@@ -1602,6 +1627,8 @@ impl Host for RuntimeHost {
                 | Request::Checkpoint(_)
                 | Request::EventStart(_)
                 | Request::CarSwap(_)
+                | Request::UpdateBodyShop
+                | Request::UpdateMinimapIcons
         );
         if done && (!every_frame || *n == 1) {
             info!("hsm: {:5} request {r:?}", self.frame);
@@ -1612,6 +1639,9 @@ impl Host for RuntimeHost {
     fn query(&mut self, q: &Query) -> Option<u64> {
         // The loads the logic asked for (`logic_loads.rs`).
         if let Some(a) = self.loads.query(q) {
+            return Some(a);
+        }
+        if let Some(a) = crate::logic_profile::query(q, &self.profile) {
             return Some(a);
         }
         match q {

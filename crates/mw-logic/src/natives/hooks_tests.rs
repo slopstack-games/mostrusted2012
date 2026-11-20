@@ -66,8 +66,11 @@ fn new_game_and_continue() {
         EventInfo { id: 10, mode: 390145, available: true, rollout_ok: true, ..Default::default() },
         EventInfo { id: 30, mode: 390145, available: true, rollout_ok: true, ..Default::default() },
     ];
+    s.progression.set_last_played(INTRO_PLAYED, 1);
     call(&r, &mut s, "SetNewGame", Some(r#"{ "NewGame": true }"#));
     assert!(s.game_modes.new_game && !s.game_modes.recap && s.game.save_pending && s.progression.save_requested);
+    // `FUN_0072bf20`: the tables emptied.
+    assert_eq!(s.progression.last_played(INTRO_PLAYED), -1);
     // First pass: the listed events only.
     assert_eq!((s.game.pending_event, s.game.pending_event_aux), (30, -1));
     assert_eq!(s.players.local_player().unwrap().heat_3dc, 0.0);
@@ -77,8 +80,10 @@ fn new_game_and_continue() {
     s.config.freedrive_mode = 390145;
     s.game_modes.events =
         vec![EventInfo { id: 10, mode: 390145, available: true, rollout_ok: true, ..Default::default() }];
+    s.progression.set_last_played(INTRO_PLAYED, 1);
     call(&r, &mut s, "SetNewGame", Some(r#"{ "NewGame": false }"#));
     assert!(s.game_modes.recap && !s.game_modes.new_game);
+    assert_eq!(s.progression.last_played(INTRO_PLAYED), 1);
     assert_eq!(s.game.pending_event, 10);
     assert_eq!(s.players.local_player().unwrap().heat_3dc, 2.0);
     // No free-drive event at all: −1.

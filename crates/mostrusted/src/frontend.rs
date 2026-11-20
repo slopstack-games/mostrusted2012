@@ -119,6 +119,7 @@ impl Plugin for FrontEndPlugin {
             reset_screens: false,
             world_shown: false,
             logic_mute: false,
+            black_background: false,
         })
         .add_systems(Startup, start_loading)
         .add_systems(
@@ -235,6 +236,10 @@ pub struct FrontEnd {
     /// `--hsm`: a `MUTE_SOUND` reason counted up by the logic (logic.rs): the world's sounds are muted as on the
     /// front-end screens.
     pub logic_mute: bool,
+    /// `--hsm`: the UI manager's black background (UIM+0x2d260, `SetBlackBackground`, `logic_profile.rs`): the
+    /// renderer skips the world (`FUN_006a0310`). Set by the boot ("Top State"), cleared by "InGame"; the
+    /// front-end screens cover the frame meanwhile.
+    pub black_background: bool,
 }
 
 impl FrontEnd {
@@ -938,6 +943,9 @@ pub struct Profile {
     pub bundle: String,
     pub position: Option<Vec3>,
     pub collected: Collected,
+    /// The progression database's `last_played` table (the line `lastplayed=<key>:<value>,...`, written by the
+    /// logic's `SaveProfile`; older files have none).
+    pub last_played: Option<std::collections::BTreeMap<u8, i64>>,
 }
 
 /// Free-roam finds kept in the profile (`jackspots.rs`, `bodyshop.rs`), as `TriggerData` ids: the lines
@@ -1004,6 +1012,16 @@ pub fn load_profile(path: &std::path::Path) -> Option<Profile> {
                 }
             }
             Some(("swapspot", v)) => p.collected.swap_spot = v.trim().parse().ok(),
+            Some(("lastplayed", v)) => {
+                p.last_played = Some(
+                    v.split(',')
+                        .filter_map(|pair| {
+                            let (k, x) = pair.split_once(':')?;
+                            Some((k.trim().parse().ok()?, x.trim().parse().ok()?))
+                        })
+                        .collect(),
+                )
+            }
             Some(("songlists", v)) => {
                 p.collected.song_lists = v
                     .split(',')
@@ -1024,29 +1042,55 @@ pub fn vehicle_id(bundle: &str) -> Option<u32> {
     bundle.to_ascii_uppercase().rsplit('/').next()?.strip_prefix("VEH_")?.split('_').next()?.parse().ok()
 }
 
+/// Write the profile: the car and its position, the free-roam finds and, from the logic's `SaveProfile`, its
+/// `last_played` table. Without the logic (or a direct `--drive`) every [`AUTOSAVE`] s and on a new find; under
+/// the logic when it asks (`logic_profile::SaveRequest`: its "Regular Autosave", the event ends, ...) and on a
+/// new find.
+#[allow(clippy::too_many_arguments)]
 fn save_profile(
     mut front: ResMut<FrontEnd>,
     time: Res<Time<Real>>,
     garage: Res<crate::garage::Garage>,
     car: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     mut collected: Option<ResMut<Collected>>,
+    mut request: Option<ResMut<crate::logic_profile::SaveRequest>>,
+    race: Option<Res<crate::race::RaceState>>,
 ) {
-    if front.profile.is_none() || !front.playing() {
+    if front.profile.is_none() {
         return;
     }
-    let t = time.elapsed_secs();
-    // A new find is saved at once (the game saves its profile on these events too: `SaveProfile`).
+    // A new find is saved at once (the collectables' handler asks the profile for a save too).
     let dirty = collected.as_ref().is_some_and(|c| c.dirty);
-    if t - front.autosave < AUTOSAVE && !dirty {
+    let t = time.elapsed_secs();
+    let asked = match request.as_deref_mut() {
+        Some(r) => {
+            let asked = r.pending.take();
+            if asked.is_none() && !dirty {
+                return;
+            }
+            asked
+        }
+        None => {
+            if !front.playing() || (t - front.autosave < AUTOSAVE && !dirty) {
+                return;
+            }
+            None
+        }
+    };
+    let Some(path) = front.profile.clone() else { return };
+    let mut text = String::new();
+    let mut owned = vec![];
+    // The car and where it is: the profile's rollout, not an event's car (kept as saved during an event).
+    if race.is_none()
+        && let (Some(current), Ok(xf)) = (garage.current.as_ref(), car.single())
+    {
+        let p = xf.translation();
+        text += &format!("bundle={}\nposition={:.2},{:.2},{:.2}\n", current.bundle, p.x, p.y, p.z);
+        owned.extend(["bundle=", "position="]);
+    } else if request.is_none() {
         return;
     }
-    let (Some(current), Ok(xf)) = (garage.current.as_ref(), car.single()) else { return };
     front.autosave = t;
-    let Some(path) = front.profile.clone() else { return };
-    let p = xf.translation();
-    let mut text = format!("bundle={}\nposition={:.2},{:.2},{:.2}\n", current.bundle, p.x, p.y, p.z);
-    // Lines of other modules (the free-roam progress, `freeroam.rs`) are kept as they are.
-    let mut owned = vec!["bundle=", "position="];
     if let Some(c) = collected.as_mut() {
         text += &c.lines();
         owned.extend(["jackspots=", "jackcars=", "bodyshops=", "swapspot=", "songlists="]);
@@ -1054,14 +1098,22 @@ fn save_profile(
             c.dirty = false;
         }
     }
+    if let Some(table) = &asked {
+        let rows: Vec<String> = table.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+        text += &format!("lastplayed={}\n", rows.join(","));
+        owned.push("lastplayed=");
+    }
+    // Lines of other modules (the free-roam progress, `freeroam.rs`) are kept as they are.
     if let Some(old) = crate::platform::read_text(&path) {
         for line in old.lines().filter(|l| !owned.iter().any(|k| l.starts_with(k))) {
             text.push_str(line);
             text.push('\n');
         }
     }
-    if let Err(e) = crate::platform::write_text(&path, &text) {
-        warn!("could not save {}: {e}", path.display());
+    match crate::platform::write_text(&path, &text) {
+        Ok(()) if asked.is_some() => info!("profile saved ({})", path.display()),
+        Ok(()) => {}
+        Err(e) => warn!("could not save {}: {e}", path.display()),
     }
 }
 

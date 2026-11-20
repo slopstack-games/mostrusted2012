@@ -181,6 +181,13 @@ pub struct Collectables {
 }
 
 impl Collectables {
+    /// A new game (`FUN_0072bf20` through the logic's `NewGame`, `logic_profile.rs`): the finds and the Speed
+    /// Points bucket emptied, saved with the next save.
+    pub fn reset_progress(&mut self) {
+        self.progress = Progress::default();
+        self.dirty = true;
+    }
+
     pub fn total(&self, kind: Collectable) -> usize {
         self.triggers.iter().filter(|t| t.collectable() == Some(kind)).count()
     }

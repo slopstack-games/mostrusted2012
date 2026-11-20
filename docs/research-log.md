@@ -11,6 +11,57 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-20: the logic's profile / progression / UI requests carried out (`logic_profile.rs`, PLAN M8.7)
+
+logic.rs hands these requests to `crates/mostrusted/src/logic_profile.rs` (one arm of its request match, one
+`Carry::Profile`, one query hook). What each does now (handlers in the natives' doc comments):
+
+- `NewGame` (`FUN_0068fd50`): a new game empties the progression tables (`FUN_0072bf20` lists `last_played`,
+  `Collect3`, `CollectTypes`, `SPBucket`, ... and not `SongLists`): the logic's `last_played` (`hooks_flow::set_new_game`),
+  `frontend::Collected` (song lists kept) and `freeroam::Collectables` progress, then saved. Continue: nothing (the
+  start-up placed the car at its saved position before the world loads; main.rs `continue_pose`).
+- `SaveProfile`: the profile is written now (`frontend::save_profile`), with the logic's `last_played` table as the
+  new line `lastplayed=k:v,...`; `LoadProfile` reads it back into the logic (`Loads::take_last_played`), so the intro
+  flag (key 0xb) and the last event (key 1) come from the file (older files: the start-up stand-in stays). Under the
+  logic the runtime's 10 s autosave timer is gone: the logic's "Regular Autosave" (120 s) and the event saves decide;
+  a new find still saves at once. During an event the `bundle=` / `position=` lines are kept (the save holds the
+  profile's rollout, not the event's car).
+- `SetRolloutFromProfile` (`FUN_00692550`): the profile's car (`ProfileCar`: the last car driven outside an event; every
+  runtime car change there is a player choice the original writes to the rollout, `FUN_00729f20`) is driven when
+  another one is. **Model decision**: its first paint (our profile keeps no paint).
+- `PopulateSettings` (`FUN_0086e0a0`, vtable +4 of the four pages SM+4 / +0x854 / +0x6c4 / +0x7b0): the page classes
+  are not ported; the runtime's settings are settings.cfg's (LoadProfile / ApplyProfileSettings): nothing to refresh.
+- `PauseMessages` / `ForcePauseMessageQueues` (`PAUSEMSGS` 0x74e890 / 0x74edd0 / 0x74ee10): the named queues' pause
+  byte +0x25 (`FeedbackQueues::apply`). Open: the HUD category counters (G480 +0x124b8 ...) have no HUD reader here;
+  the speech pause byte G+0x2ed68 has no reader found (only the two writers in `PAUSEMSGS`).
+- `UpdateBodyShop` (`DOBODYSHOP` 0x749220): `bodyshop::pass` runs on the frames the behaviour updates
+  (`BodyShopUpdate`), not on its own (direct `--drive` keeps its own timing).
+- `UpdateMinimapIcons` (`MINIMAPICONS` 0x7579b0, child of every "Show World States"): the other players' minimap icons
+  (the racers) are drawn on the frames it updates (`MinimapIconsUpdate`, hud.rs). Open: the visibility check
+  `FUN_0074e0b0` (team, speed, distance; online players) is not ported: every racer passes.
+- `ClearSelectedEvent` (`CLRSELEVENT` 0x73baa0): the world map's selected item cleared
+  (`MapScreen::clear_selected_event`; the player's own item is not an event).
+- `SetBlackBackground` (UIM+0x2d260): read by `FUN_006a0310` in the renderer's frame setup `FUN_0061f800` (world
+  skipped while set). "Top State" 21597 sets it, "InGame" clears it; the runtime's title / loading screens cover the
+  frame meanwhile; kept as `FrontEnd::black_background`.
+- `SetProfileSyncFlag`: G+0x2ee5c = 1, answered as `Query::ProfileSyncFlag`.
+- `AwardPostEventAwards` (`FUN_006e65e0`): with amount 0 and no awards nothing is given (carried out). An award is
+  left logged: the progression's award functions (`FUN_007361d0`, `FUN_00736ab0`, `FUN_006792b0`) are not ported.
+- `SetCreditsTransition`: the logic's GMM+0x2f26 (`mode_machine::apply`), marked done.
+- Offline answers (PC without a connection, marked done): `GetSpeedwallTimes` (`FUN_006f1dc0` asks Autolog through
+  the leaderboard's vtable: none pending), `RefreshRecommendations` (`FUN_007355b0`: the "Recommends" document; index
+  stays −1), `UpdateCachedMostWantedList` (`FUN_0071dfe0`: notification-centre "GetMostWantedList" via
+  `FUN_00823b20` fails: id −1), `ServerOpStart` / `ServerOpReport` / `ServerOpAck` (no request sent, no error shown),
+  `SetProfileUser` / `ProfileUserSelected` (one local profile file), `ListenForPrimaryUser` / `ReleasePrimaryUser`
+  (logic.rs's listener, already used).
+
+**Still open**: `PreparePostEventAwards` (`FUN_006fbb60`) stays logged: offline and outside free drive it takes the
+finish position (player +0x5b8) against the event's previous best (GMM+0x2ca2): the award id per position
+(`FUN_006e6500`: config +0x1c / +0x20 / +0x24) and its amount `FUN_0071de60` = (4 − pos) × unit − (4 − best) × unit
+(unit at +0x1520 of the progression object, ≤ 3rd only, ≥ 0), then 15 unlock bits (player +0x4b8 & ~GMM+0x2eb0)
+into the award list, then the outro message id (+0x2390). Needs the per-event best results and the unlock tables in
+the profile; it would then feed `AwardPostEventAwards`.
+
 ## 2026-11-19: the cars' damage sequences and their locator spot effects (`damage_vfx.rs`)
 
 The 1,672 `VfxLocatorGroupVehicleSpotEffectSequenceItem`s (836 per LOD set, 93 cars) all sit in the cars'

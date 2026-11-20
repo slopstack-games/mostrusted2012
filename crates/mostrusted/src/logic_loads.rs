@@ -78,6 +78,8 @@ pub struct Loads {
     profile: ProfileLoad,
     /// The settings read with the profile (applied on `ApplyProfileSettings`).
     settings: Option<AudioSettings>,
+    /// The loaded profile's `last_played` table, until the logic takes it (logic.rs).
+    last_played: Option<std::collections::BTreeMap<u8, i64>>,
     /// Feedback groups loaded (their `Messages`) or released (`None`) since the last
     /// [`Loads::take_feedback_groups`]: the message queues' group slots (`feedback.rs`).
     feedback_groups: Vec<(i64, Option<Vec<mw_assets::sequence::FeedbackMessageInfo>>)>,
@@ -97,6 +99,7 @@ impl Loads {
             layouts: HashMap::new(),
             profile: ProfileLoad::Idle,
             settings: None,
+            last_played: None,
             feedback_groups: Vec::new(),
         }
     }
@@ -249,9 +252,15 @@ impl Loads {
                     }
                     self.profile = ProfileLoad::Loaded;
                     self.settings = Some(settings);
+                    self.last_played = profile.and_then(|p| p.last_played);
                 }
             }
         }
+    }
+
+    /// The loaded profile's `last_played` table (once; `None` when the file has none).
+    pub fn take_last_played(&mut self) -> Option<std::collections::BTreeMap<u8, i64>> {
+        self.last_played.take()
     }
 
     /// The settings read with the profile (`ApplyProfileSettings`).

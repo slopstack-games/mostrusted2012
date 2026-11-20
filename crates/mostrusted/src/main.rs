@@ -59,6 +59,7 @@ mod lod;
 mod logic;
 mod logic_effects;
 mod logic_loads;
+mod logic_profile;
 mod map_screen;
 mod materials;
 mod menu;
