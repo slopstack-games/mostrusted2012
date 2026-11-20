@@ -29,7 +29,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use avian3d::prelude::{AngularVelocity, SpatialQuery, SpatialQueryFilter};
+use avian3d::prelude::AngularVelocity;
 use mw_logic::natives::LogicState;
 use mw_logic::natives::lua_requests::ContactBody;
 use mw_logic::natives::lua_road::Shared;
@@ -99,6 +99,8 @@ pub struct PendingPlacement {
     placement: Option<Placement>,
     /// The streaming focus was moved to the target (message 4 sent: message 5 goes back).
     focused: bool,
+    /// Frames waited (the diagnostic every 600).
+    waited: u32,
 }
 
 /// `SetInfiniteNitrous`: the local tank is held at 100 (nitrous state +0xc0).
@@ -221,25 +223,45 @@ pub fn place_vehicles(
     mut pending: ResMut<PendingPlacement>,
     residency: Option<Res<crate::frontend::Residency>>,
     mut focus: ResMut<crate::streaming::PlacementFocus>,
-    spatial: SpatialQuery,
-    mut cars: Query<(Entity, &mut Car, &mut Transform, &mut LinearVelocity, &mut AngularVelocity), With<Player>>,
+    ground_ray: crate::ground_ray::GroundRay,
+    mut cars: Query<(&mut Car, &mut Transform, &mut LinearVelocity, &mut AngularVelocity), With<Player>>,
+    logic: Option<NonSend<crate::world_logic::WorldLogic>>,
 ) {
     let Some(p) = pending.placement else { return };
-    let Ok((entity, mut car, mut t, mut lin, mut ang)) = cars.single_mut() else { return };
+    // Player +0x2c1 (`FUN_006c9fb0` sets it, the reset's end clears it): `Players.LocalPlayer.ResetInProgress`.
+    let set_resetting = |on: bool| {
+        if let Some(l) = logic.as_ref()
+            && let Some(pl) = l.state.borrow_mut().players.local_player_mut()
+        {
+            pl.reset_pending = on;
+        }
+    };
+    let Ok((mut car, mut t, mut lin, mut ang)) = cars.single_mut() else { return };
     let mph = p.mph.min(PLACE_MAX_MPH);
     let speed = mph * MS_PER_MPH;
     let radius = crate::frontend::PLACE_RADIUS.max(speed * PLACE_LOOKAHEAD);
     let from = p.position + Vec3::Y * 5.0;
-    let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])
-        .with_mask(crate::props::GameLayer::World);
-    let ground = spatial.cast_ray(from, Dir3::NEG_Y, 40.0, true, &filter).map(|h| from.y - h.distance);
+    // The world's collision only (the car is not on the world layer); while the logic pauses the sim around an
+    // event's start the query trees miss the ground that streamed in meanwhile, so `GroundRay` tests the colliders
+    // themselves then.
+    let ground = ground_ray.down(from, 40.0).map(|d| from.y - d);
     let resident = residency.is_none_or(|r| r.resident(p.position, radius));
     let yaw = Quat::from_rotation_y(p.direction.x.atan2(p.direction.z));
     let (Some(ground), true) = (ground, resident) else {
         if !pending.focused {
             info!("logic: placement at {:.1?} waits for the world to stream in", p.position);
         }
+        pending.waited += 1;
+        if pending.waited.is_multiple_of(600) {
+            let far = ground_ray.down(p.position + Vec3::Y * 200.0, 600.0).map(|d| p.position.y + 200.0 - d);
+            info!(
+                "logic: placement at {:.1?} still waits: ground {ground:?} (within 600 m: {far:?}), resident {resident}, paused {}",
+                p.position,
+                ground_ray.paused()
+            );
+        }
         pending.focused = true;
+        set_resetting(true);
         focus.0 = Some(p.position);
         t.translation = p.position + Vec3::Y * 0.5;
         t.rotation = yaw;
@@ -251,6 +273,8 @@ pub fn place_vehicles(
         focus.0 = None;
     }
     pending.placement = None;
+    pending.waited = 0;
+    set_resetting(false);
     t.translation = p.position.with_y(ground + 0.02);
     t.rotation = yaw;
     lin.0 = yaw * Vec3::Z * speed;

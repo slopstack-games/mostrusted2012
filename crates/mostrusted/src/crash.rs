@@ -42,6 +42,16 @@ const TRACE_MIN_MPH: f32 = 5.0;
 const RESET_LOOKBACK: f32 = 1.0;
 /// Safe poses kept (game seconds).
 const HISTORY: f32 = 3.0;
+/// `FUN_00918600`: a car whose body's up vector has a y below `.bss` 0x01185790 (0.17365 = sin 10°, read live) is
+/// upside down: `FUN_009168b0` crashes it ("voodoo logic" / "upside down").
+const UPSIDE_DOWN_Y: f32 = 0.173_648_27;
+/// MODEL (the original's "over fatal collision" regions, `FUN_00916cc0` with the crash config's sequences, are not
+/// decoded): a car in the air this long with no world collision within [`FALL_PROBE`] below it has left the world.
+const FALL_TIME: f32 = 2.0;
+const FALL_PROBE: f32 = 200.0;
+/// MODEL: and has dropped this far below where it left the ground (a car carried level by a test or a cutscene is
+/// not falling).
+const FALL_DROP: f32 = 10.0;
 /// Model decision: `Tracking_Speed` is the fraction of the aim error closed per 60 Hz tick.
 const TICK: f32 = 1.0 / 60.0;
 /// Contacts with normals steeper than this are the body landing on the ground (the game's
@@ -53,7 +63,7 @@ pub struct CrashPlugin;
 impl Plugin for CrashPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CrashState>()
-            .add_systems(FixedUpdate, (hold_and_reset).before(crate::drive::car_physics))
+            .add_systems(FixedUpdate, (hold_and_reset, flip_for_test).before(crate::drive::car_physics))
             .add_systems(FixedPostUpdate, detect_crash.after(PhysicsSystems::StepSimulation))
             .add_systems(Update, run_sequence.after(crate::camera::GameplayCamera));
     }
@@ -70,6 +80,8 @@ struct SafePose {
     translation: Vec3,
     rotation: Quat,
     mph: f32,
+    /// Three wheels or more on the ground and upright (see [`CrashState::last_grounded`]).
+    grounded: bool,
 }
 
 /// The crash in progress.
@@ -114,6 +126,14 @@ pub struct CrashState {
     pub car_crash: Option<CarCrash>,
     pub crashes: u32,
     history: VecDeque<SafePose>,
+    /// The last grounded safe pose, kept past [`HISTORY`]. MODEL: the original moves its saved pose onto the road
+    /// network (`FUN_00648060`, not read); a pose with the car on its wheels stands in, so a reset after a flip or a
+    /// fall off the world does not put the car back in the air.
+    last_grounded: Option<SafePose>,
+    /// Game seconds with no wheel on the ground.
+    airborne: f32,
+    /// The height where the car last had a wheel on the ground.
+    liftoff_y: f32,
     game_time: f32,
     trace: Option<std::fs::File>,
     trace_opened: bool,
@@ -160,7 +180,7 @@ pub(crate) fn touching(p: &ContactPoint) -> bool {
 }
 
 /// Record safe poses and test body impacts against the world rule.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn detect_crash(
     time: Res<Time>,
     config: Option<Res<CrashConfig>>,
@@ -171,6 +191,12 @@ pub(crate) fn detect_crash(
     collider_of: Query<&ColliderOf>,
     bodies: Query<&RigidBody>,
     props: Query<(), With<crate::props::PropBody>>,
+    (ground, logic, residency, race_test): (
+        crate::ground_ray::GroundRay,
+        Option<NonSend<crate::world_logic::WorldLogic>>,
+        Option<Res<crate::frontend::Residency>>,
+        Option<Res<crate::race::RaceTest>>,
+    ),
 ) {
     let Some(config) = config else { return };
     let Ok((car, transform, velocity)) = cars.single() else { return };
@@ -250,7 +276,35 @@ pub(crate) fn detect_crash(
     {
         closing_mph = c.closing_mph;
     }
-    let is_crash = is_world_crash || car_crash.is_some();
+    // `FUN_00918600` → `FUN_006a3b50`: for the human player, upside down crashes whenever an event runs and its mode
+    // has started (GMM+0x2ce0, `FUN_006dfe00`; free roam is the free-drive event). Without the logic: always.
+    let up_y = (transform.rotation * Vec3::Y).y;
+    let wheels_down = car.wheels_down();
+    // Not while the car is being placed (the original skips a vehicle with +0x1777 set; the logic's reset in
+    // progress, player +0x2c1 / the vehicle's reset flag, stands in: `place_vehicles` holds the car there).
+    // `--test race` carries the car kinematically along the route (not a car the rules apply to).
+    let mode_on = race_test.is_none()
+        && logic.as_ref().is_none_or(|l| {
+            let st = l.state.borrow();
+            mw_logic::natives::mode_machine::mode_started(&st)
+                && !st.players.local_player().is_some_and(|p| p.reset_pending || p.vehicle_resetting)
+        });
+    let upside_down = up_y < UPSIDE_DOWN_Y && mode_on;
+    // MODEL: left the world (see [`FALL_TIME`]).
+    if wheels_down == 0 {
+        state.airborne += time.delta_secs();
+    } else {
+        state.airborne = 0.0;
+        state.liftoff_y = transform.translation.y;
+    }
+    let fell = mode_on
+        && state.airborne >= FALL_TIME
+        && transform.translation.y < state.liftoff_y - FALL_DROP
+        // The world there is in (a run with `--units` has no collision beyond its units: not the map's edge).
+        && residency.as_ref().is_none_or(|r| r.zone_loaded(transform.translation))
+        && velocity.y < 0.0
+        && ground.down(transform.translation + Vec3::Y * 2.0, FALL_PROBE).is_none();
+    let is_crash = is_world_crash || car_crash.is_some() || upside_down || fell;
     if closing_mph > TRACE_MIN_MPH {
         let limit = rule.and_then(|r| r.closing_mph).unwrap_or(f32::INFINITY);
         // The contact in the car's frame (x right, y up, z forward from the origin at road level).
@@ -277,12 +331,21 @@ pub(crate) fn detect_crash(
         ));
     }
     if !is_crash {
-        state.history.push_back(SafePose {
+        let pose = SafePose {
             time: now,
             translation: transform.translation,
             rotation: transform.rotation,
             mph: velocity.length() / MPH,
-        });
+            // On its wheels, upright, and the world's collision right under it (a wheel's contact can outlive a
+            // jump by a tick).
+            grounded: wheels_down >= 3
+                && up_y >= UPSIDE_DOWN_Y
+                && ground.down(transform.translation + Vec3::Y, 3.0).is_some(),
+        };
+        if pose.grounded {
+            state.last_grounded = Some(pose);
+        }
+        state.history.push_back(pose);
         while state.history.front().is_some_and(|p| now - p.time > HISTORY) {
             state.history.pop_front();
         }
@@ -291,14 +354,38 @@ pub(crate) fn detect_crash(
     // The impact itself: the last safe pose is the one before this tick.
     let pre = state.history.back().copied();
     let pre_mph = pre.map_or(velocity.length() / MPH, |p| p.mph);
-    let reset_pose =
-        state.history.iter().rev().find(|p| now - p.time >= RESET_LOOKBACK).or(state.history.front()).copied();
+    let reset_pose = state
+        .history
+        .iter()
+        .rev()
+        .find(|p| now - p.time >= RESET_LOOKBACK && p.grounded)
+        .copied()
+        .or(state.last_grounded)
+        .or_else(|| {
+            state.history.iter().rev().find(|p| now - p.time >= RESET_LOOKBACK).or(state.history.front()).copied()
+        });
+    state.airborne = 0.0;
+    let (grounded_poses, poses) = (state.history.iter().filter(|p| p.grounded).count(), state.history.len());
+    state.trace(format_args!(
+        "reset pose {:?} ({grounded_poses} of {poses} safe poses grounded)",
+        reset_pose.map(|p| p.translation)
+    ));
     // The heading before the impact (this tick's velocity is already the rebound).
     let heading = pre.map_or(transform.rotation, |p| p.rotation) * Vec3::Z;
     let travel = Vec3::new(heading.x, 0.0, heading.z).normalize_or(Vec3::Z);
     state.crashes += 1;
     state.trace(format_args!("crash {now:.3} {closing_mph:.1} {pre_mph:.1}"));
+    let why = if is_world_crash || car_crash.is_some() {
+        None
+    } else if upside_down {
+        Some(format!("upside down (up y {up_y:.2})"))
+    } else {
+        Some(format!("left the world ({:.1} s in the air, no ground within {FALL_PROBE} m)", FALL_TIME))
+    };
     match car_crash.filter(|_| !is_world_crash) {
+        _ if let Some(why) = &why => {
+            info!("CRASH: {why} (pre-crash {pre_mph:.0} mph); crash camera {}", config.0.camera.id)
+        }
         Some(c) => info!(
             "CRASH: {} (damage {:.1}, closing {:.1} mph, pre-crash {pre_mph:.0} mph); crash camera {}",
             c.rule, c.damage, c.closing_mph, config.0.camera.id
@@ -320,6 +407,41 @@ pub(crate) fn detect_crash(
         shot: None,
         base_speed: virtual_time.relative_speed(),
     });
+}
+
+/// `MW_FLIP_AT=<s>` (a test aid): at that game time the player's car is turned onto its roof, 1.5 m up (the
+/// upside-down crash and its reset, [`UPSIDE_DOWN_Y`]); `MW_FLIP_AT=<s>,x,y,z` moves it upright to that point
+/// instead (off the map: the fall rule, [`FALL_TIME`]).
+fn flip_for_test(
+    time: Res<Time>,
+    mut done: Local<bool>,
+    mut elapsed: Local<f32>,
+    mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity), With<Player>>,
+) {
+    static AT: std::sync::LazyLock<Option<(f32, Option<Vec3>)>> = std::sync::LazyLock::new(|| {
+        let v: Vec<f32> = std::env::var("MW_FLIP_AT").ok()?.split(',').filter_map(|x| x.parse().ok()).collect();
+        Some((*v.first()?, (v.len() == 4).then(|| Vec3::new(v[1], v[2], v[3]))))
+    });
+    let Some((at, to)) = *AT else { return };
+    *elapsed += time.delta_secs();
+    if *done || *elapsed < at {
+        return;
+    }
+    let Ok((mut t, mut lin, mut ang)) = cars.single_mut() else { return };
+    *done = true;
+    if let Some(p) = to {
+        t.translation = p;
+        lin.0 = Vec3::ZERO;
+        ang.0 = Vec3::ZERO;
+        info!("MW_FLIP_AT: the car moved to {p:.1?}");
+        return;
+    }
+    let forward = t.rotation * Vec3::Z;
+    t.rotation = Quat::from_axis_angle(forward, std::f32::consts::PI) * t.rotation;
+    t.translation.y += 1.5;
+    lin.0 = Vec3::ZERO;
+    ang.0 = Vec3::ZERO;
+    info!("MW_FLIP_AT: the car turned onto its roof at {:.1?}", t.translation);
 }
 
 /// While crashed the player has no control; when the reset is due, put the car back on its saved pose.
@@ -347,6 +469,7 @@ fn hold_and_reset(
         translation: transform.translation,
         rotation: transform.rotation,
         mph: active.pre_mph,
+        grounded: false,
     });
     // In a race the reset faces the target gate (`FUN_006c9fb0`: gate position − saved position).
     let fwd = match facing.0 {

@@ -1614,7 +1614,7 @@ fn update_text(
 /// - `MW_RACE_TEST_JACK=1`: then the jack-spot test (`jackspots.rs`) swaps cars at the nearest spot and exits.
 /// - `MW_RACE_TEST_HOLD=<s>`: keep running this long after the result (to screenshot the results).
 #[derive(Resource, Default)]
-struct RaceTest {
+pub(crate) struct RaceTest {
     /// Target entry being driven through and the distance along its approach.
     leg: Option<(usize, f32)>,
     done: bool,

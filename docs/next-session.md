@@ -12,6 +12,8 @@ VFX), Gameplay switches / heat levels, world-object sequences, race / game-mode 
 UI requests (`logic_profile.rs`); research log 2026-11-19 / 20.
 
 **Open**:
+- **Crashes / intro** (2026-11-20, research log "the game's intro start"): "over fatal collision" regions and
+  "Beached" not decoded (an off-map fall is a model rule); `SetSinglePlayerRollout` not carried out.
 - **Gameplay triggers** (2026-11-20, research log): AI-player and roadblock outputs, `GameplaySequenceItem` 8 and
   the scoring actions' triggers through the manager, the reset sweep.
 - **Sequences left**: spike strips (roadblock strip placement, tyre burst; the player's weapon has no offline
